@@ -1,0 +1,12 @@
+# virtual environment
+venv/
+
+# others
+misc/
+results/
+data/
+
+# temp/cache
+__pycache__/
+trajaugcfm.egg-info/
+slurmlogs/
