@@ -1,7 +1,12 @@
+from abc import ABC, abstractmethod
 import os
 from itertools import product
 from time import time
-from typing import Self
+from typing import (
+    Literal,
+    overload,
+    Self
+)
 
 import jaxtyping as jt
 import numpy as np
@@ -39,7 +44,7 @@ class TrajAugCFMSampler(IterableDataset):
         b:           int,
         nt:          int,
         rbfk_scale:  float=1.,
-        rbfk_bounds: tuple[int|float, int|float]=(0.05, 5),
+        rbfk_bounds: tuple[int|float, int|float]|Literal['fixed']=(0.05, 5),
         gpr_nt:      int=10,
         rbfd_scale:  float=1.,
         reg:         float=1e-8,
@@ -184,11 +189,13 @@ class TrajAugCFMSampler(IterableDataset):
         where len(indices) == b.
         Then stack Xs[indices, i] in the time dimension.
         '''
-        return np.stack(
-            [self.Xs[self.prng.choice(self.Xs.shape[0], size=self.n), i] \
-             for i in range(self.Xs.shape[1])],
-            axis=1
-        )
+        # return np.stack(
+            # [self.Xs[self.prng.choice(self.Xs.shape[0], size=self.n), i] \
+             # for i in range(self.Xs.shape[1])],
+            # axis=1
+        # )
+        idxs = self.prng.integers(self.Xs.shape[0], size=(self.n, self.Xs.shape[1]))
+        return self.Xs[idxs, np.arange(self.Xs.shape[1])[None, :]]
 
     def _sample_z_given_refs(
         self,
@@ -370,13 +377,14 @@ class TrajAugCFMSampler(IterableDataset):
 
         ## Next compute conditional mu_t_hid|obs and sigma_t_hid|obs
         Sigma_t_hidobs = Sigma_t[:, :, *self.hidobsmask]                  ## (k, nt, hid, obs)
-        Sigma_t_obsobs_inv = Sigma_t[:, :, *self.obsobsmask]              ## (k, nt, obs, obs)
-        Sigma_t_obsobs_inv = batch_inv(Sigma_t_obsobs_inv)                ## (k, nt, obs, obs)
+        Sigma_t_obsobs = Sigma_t[:, :, *self.obsobsmask]              ## (k, nt, obs, obs)
+        Sigma_t_obsobs_inv = batch_inv(Sigma_t_obsobs)                ## (k, nt, obs, obs)
         B = Sigma_t_hidobs @ Sigma_t_obsobs_inv                           ## (k, nt, hid, obs)
 
         obs_diff = xt_obs - mu_t[:, None, :, self.obsmask]                ## (k, b, nt, obs)
-        cond_mu_t = B[:, None] @ obs_diff[:, :, :, :, None]               ## (k, b, nt, hid, 1)
-        cond_mu_t = cond_mu_t.squeeze(axis=4)                             ## (k, b, nt, hid)
+        # cond_mu_t = B[:, None] @ obs_diff[:, :, :, :, None]               ## (k, b, nt, hid, 1)
+        # cond_mu_t = cond_mu_t.squeeze(axis=4)                             ## (k, b, nt, hid)
+        cond_mu_t = np.matvec(B[:, None], obs_diff)
 
         cond_Sigma_t = B @ Sigma_t[:, :, *self.obshidmask]
         cond_Sigma_t = Sigma_t[:, :, *self.hidhidmask] - cond_Sigma_t     ## (k, nt, hid, hid)
@@ -387,8 +395,9 @@ class TrajAugCFMSampler(IterableDataset):
         ## Sample xt_hid|obs
         eps = self.prng.normal(size=cond_mu_t.shape)                      ## (k, b, nt, hid)
         ## xt_hid vars have nonzero covariance
-        xt_hid = cond_A_t[:, None] @ eps[:, :, :, :, None]                ## (k, b, nt, hid, 1)
-        xt_hid = xt_hid.squeeze(axis=4) + cond_mu_t                       ## (k, b, nt, hid)
+        # xt_hid = cond_A_t[:, None] @ eps[:, :, :, :, None]                ## (k, b, nt, hid, 1)
+        # xt_hid = xt_hid.squeeze(axis=4) + cond_mu_t                       ## (k, b, nt, hid)
+        xt_hid = np.matvec(cond_A_t[:, None], eps)
 
         xt[:, :, :, self.obsmask] = xt_obs
         xt[:, :, :, self.hidmask] = xt_hid
@@ -523,6 +532,17 @@ class TrajAugCFMSampler(IterableDataset):
         ut = A_t_xtdiff + mu_t_prime[:, None]                            ## (k, b, nt, dims)
         return ut
 
+    def _compute_ut2(
+        self,
+        xt: jt.Real[np.ndarray, 'k b nt dims'],
+        mu_t: jt.Real[np.ndarray, 'k nt dims'],
+        mu_t_prime: jt.Real[np.ndarray, 'k nt dims'],
+        A_t_prime_A_t_inv: jt.Real[np.ndarray, 'k nt dims dims']
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        xt_diff = xt - mu_t[:, None]
+        Ax = np.matvec(A_t_prime_A_t_inv[:, None], xt_diff)
+        return Ax + mu_t_prime[:, None]
+
     def __iter__(self) -> Self:
         '''First resets iteration state, then returns self'''
         self._iteridx = -1  ## -1 instead of 0 because next() increments first
@@ -607,22 +627,31 @@ class TrajAugCFMSampler(IterableDataset):
             else:
                 ## Original W2 + GP augmentation path (unchanged)
                 ## Add reg separately for obs and hid in case they are not contiguous
-                covs += np.eye(self.dim)[None, None] * self.reg
-                L_0, Q_0 = np.linalg.eigh(covs[:, 0])
-                L_0_sqrt = np.sqrt(L_0)
+                # covs += np.eye(self.dim)[None, None] * self.reg
+                # L_0, Q_0 = np.linalg.eigh(covs[:, 0])
+                # L_0_sqrt = np.sqrt(L_0)
 
                 mu_t, C, Sigma_t = self._compute_interpolants(ts, mus, covs)
                 ## Add reg separately for obs and hid in case they are not contiguous
-                Sigma_t += np.eye(self.dim)[None, None] * self.reg
+                # Sigma_t += np.eye(self.dim)[None, None] * self.reg
                 mu_t_gpr, sigma_t_gpr = self._compute_mu_t_sigma_t_gpr(refidxs, ts)
                 xt = self._sample_xt(
                     refidxs, mu_t, Sigma_t, mu_t_gpr, sigma_t_gpr
                 )
                 mu_t_aug = self._compute_mu_t_aug(mu_t, mu_t_gpr)
                 mu_t_aug_prime = self._compute_mu_t_aug_prime(refidxs, ts, mus)
-                A_t_prime = self._compute_A_t_prime(L_0_sqrt, Q_0, C)
-                A_t_inv = self._compute_A_t_inv(L_0_sqrt, Q_0, C, ts)
-                ut = self._compute_ut(xt, mu_t_aug, mu_t_aug_prime, A_t_prime, A_t_inv)
+                # A_t_prime = self._compute_A_t_prime(L_0_sqrt, Q_0, C)
+                # A_t_inv = self._compute_A_t_inv(L_0_sqrt, Q_0, C, ts)
+                # ut = self._compute_ut(xt, mu_t_aug, mu_t_aug_prime, A_t_prime, A_t_inv)
+                I = np.eye(self.dim)
+                C_t_prime = C - I[None, ...]
+                L_C, Q_C = np.linalg.eigh(C)
+                L_C_t_inv = 1 / batch_interp(np.ones(self.dim)[None, ... ], L_C, ts)
+                C_t_inv = Q_C[:, None] \
+                          @ np.apply_along_axis(np.diag, -1, L_C_t_inv) \
+                          @ Q_C[:, None].swapaxes(-1, -2)
+                A_t_prime_A_t_inv = C_t_prime[:, None, ...] @ C_t_inv
+                ut = self._compute_ut2(xt, mu_t_aug, mu_t_aug_prime, A_t_prime_A_t_inv)
 
             ## Flatten and cast into Tensors of shape (k*b*nt, dims)
             ## Also cast to float32 for compatibility with default torch float operations
@@ -635,6 +664,7 @@ class TrajAugCFMSampler(IterableDataset):
                 return ts_t, xt_t, ut_t, st_t
             else:
                 return ts_t, xt_t, ut_t
+                # return mu_t, mu_t_gpr, sigma_t_gpr
             # return (refidxs, xs, z, mus, covs, ts, xt, gpr_dmu_dt,
             #         mu_t, C, Sigma_t, mu_t_gpr, sigma_t_gpr,
             #         L_0_sqrt, Q_0,
@@ -1147,6 +1177,1138 @@ class TrajAugCFMSamplerForLoop(IterableDataset):
         else:
             raise StopIteration
 
+## TYPING DECLARATIONS
+type RBFK_Bounds = tuple[int | float, int | float] | Literal['fixed']
+type Sigma_T = jt.Float64[np.ndarray, 'k nt dims dims'] \
+               | jt.Float64[np.ndarray, 'nt'] \
+               | float
+type Aux = jt.Float64[np.ndarray, 'k dims dims'] \
+           | jt.Float64[np.ndarray, 'nt'] \
+           | None
+type A_T_Prime_A_T_Inv = jt.Float64[np.ndarray, 'k nt dims dims'] \
+                         | jt.Float[np.ndarray, 'nt'] \
+                         | None
+
+
+class GCFMSamplerBase(IterableDataset):
+    def __init__(
+        self,
+        Xs:          jt.Real[np.ndarray, 'N margidx dims'],
+        Xrefs:       jt.Real[np.ndarray, 'Nrefs T refdims'],
+        obsmask:     list[bool],
+        tidxs:       list[int],
+        k:           int,
+        n:           int,
+        b:           int,
+        nt:          int,
+        rbfk_scale:  float=1.,
+        rbfk_bounds: RBFK_Bounds=(0.05, 5),
+        gpr_nt:      int=10,
+        rbfd_scale:  float=1.,
+        reg:         float=1e-8,
+        sigma:       float=1.0,
+        sb_reg:      float=1e-8,
+        beta_a:      float=2.0,
+        seed:        int | None=None,
+    ) -> None:
+        '''Builds sampler for Guided Conditional Flow.
+
+        Is a subclass of torch.utils.data.IterableDataset so can be
+        passed into a torch.utils.data.DataLoader. This class already batches
+        so the DataLoader should be created with the kwarg batch_size=None.
+
+        Batch size is k * b * nt.
+        Can be an iterable where a full iteration one cycle through the Xrefs
+        Currently only implemented for augmentation via a GP regression with an RBF kernel.
+
+        Args:
+            Xs:          All snapshot data
+            Xrefs:       All reference trajectories
+            obsmask:     Mask to recover only the observed (reference) variables
+            tidxs:       Time indices into Xrefs recovering the snapshot time points
+            k:           Number of refs per batch
+            n:           Number of samples per snapshot for weighted minibatch sampling
+            b:           Minibatch size per ref
+            nt:          Number of timepoints per sample in minibatch
+            rbfk_scale:  Initial scale for GPR
+            rbfk_bounds: Optimization bounds for GPR
+            gpr_nt:      Number of time points into ref used for GPR
+            rbfd_scale:  Scale for RBF distance when resampling batch conditional on ref
+            reg:         Regularization to prevent singular matrices
+            sigma:       Sigma scaler for isotropic flow conditional prob. path
+            sb_reg:      Regularizer to prevent small sigma_t for Schrodinger bridge
+            beta_a:      Shape param. if using beta dist as time sampler
+            seed:        NumPy Generator seed for reproducibility
+        '''
+        ## Data
+        self.Xs = Xs
+        self.Xrefs = Xrefs
+        self.tidxs = tidxs
+
+        ## Batch size along dimension
+        self.b = b
+        self.n = n
+        self.k = k
+        self.nt = nt
+
+        ## Pre-compute some masks
+        ## TODO: permute so var list is [obsvars, hidvars]?
+        ##       could help with any regularization?
+        self.obsmask = obsmask
+        self.hidmask = ~obsmask
+        self.obsobsmask = np.ix_(self.obsmask, self.obsmask)
+        self.obshidmask = np.ix_(self.obsmask, self.hidmask)
+        self.hidobsmask = np.ix_(self.hidmask, self.obsmask)
+        self.hidhidmask = np.ix_(self.hidmask, self.hidmask)
+
+        ## Dimensions
+        self.nobs = self.obsmask.sum()
+        self.nhid = self.hidmask.sum()
+        self.dim = self.Xs.shape[-1]
+
+        ## Time sampler params (Currently Beta only)
+        self.beta_a = beta_a
+
+        ## Variance schedule (IFMixins only)
+        self.sigma = sigma
+
+        ## Regularization
+        self.reg = reg
+        self.obsreg = np.eye(self.nobs)[None, None, ...] * self.reg
+        self.hidreg = np.eye(self.nhid)[None, None, ...] * self.reg
+        self.sb_reg = sb_reg
+
+        ## RBF params for endpoint sampling
+        self.rbfd_scale = rbfd_scale
+        self.rbfd_denom = - 2 * (rbfd_scale ** 2)
+
+        ## Gaussian Process Regression params
+        self.rbfk_scale = rbfk_scale
+        self.rbfk_bounds = rbfk_bounds
+        self.gpr_nt = gpr_nt
+        ## TODO: change to be random intervals and recompute every epoch?
+        self.gpr_ts_idxs = roundrobin_split_idxs(Xrefs.shape[1], gpr_nt)
+        tspan = np.linspace(0, 1, num=Xrefs.shape[1]).reshape((-1, 1))
+        self.gpr_ts = tspan[self.gpr_ts_idxs]
+        self.gprs = self._precompute_gprs()
+
+        ## Set up iterator state and compute len
+        self._len, r = divmod(Xrefs.shape[0], k)
+        if r > 0:
+            self._len += 1
+        self._sentinel = self._len - 1  ## needed for some indexing issues
+        self._iteridx = 0
+        self._Xrefidxs = np.arange(Xrefs.shape[0]).astype(int)
+
+        ## Reproducability
+        self.prng = np.random.default_rng(seed=seed)
+
+    def __len__(self) -> int:
+        return self._len
+
+    @classmethod
+    def get_mixin_names(cls) -> list[str]:
+        '''Return list of mixin class names'''
+        bases = {object, GCFMSamplerBase}
+        return [mixin.__name__ for mixin in cls.__bases__ if mixin not in bases]
+
+    ## TODO: maybe update to add whitenoise kernel
+    ##       and then update the derivative computation
+    def _precompute_gprs(self) -> list[GaussianProcessRegressor]:
+        '''Pre-compute GPRs on Xrefs using a RBF Kernel'''
+        gprs = [
+            GaussianProcessRegressor(
+                kernel=RBFKernel(
+                    length_scale=self.rbfk_scale,
+                    length_scale_bounds=self.rbfk_bounds
+                ),
+                copy_X_train=False
+            ) for _ in range(self.Xrefs.shape[0])
+        ]
+
+        print('Pre-computing GPRs...')
+        t0 = time()
+        for i, xref in enumerate(self.Xrefs):
+            gprs[i].fit(self.gpr_ts, xref[self.gpr_ts_idxs])
+        t1 = time()
+        print(f'Pre-computed GPRs in {t1-t0:.2f}s')
+
+        return gprs
+
+    ## TODO: vectorize this and use advanced indexing?
+    def _get_xs_minibatch(self) -> jt.Real[np.ndarray, 'n margidx dims']:
+        '''Sample minibatch from each marginal snapshot
+
+        First select indep indices for each marginal i using choice()
+        where len(indices) == b.
+        Then stack Xs[indices, i] in the time dimension.
+        '''
+        # return np.stack(
+            # [self.Xs[self.prng.choice(self.Xs.shape[0], size=self.n), i] \
+             # for i in range(self.Xs.shape[1])],
+            # axis=1
+        # )
+        idxs = self.prng.integers(self.Xs.shape[0], size=(self.n, self.Xs.shape[1]))
+        return self.Xs[idxs, np.arange(self.Xs.shape[1])[None, :]]
+
+    def _sample_z_given_refs(
+        self,
+        xs: jt.Real[np.ndarray, 'n margidx dims'],
+        refs: jt.Real[np.ndarray, 'k T refdims']
+    ) -> jt.Real[np.ndarray, 'k b margidx dims']:
+        r'''Samples z = (x_0, ..., x_M) from prod_i^M pi(x_i | ref)
+
+        Uses the RBF distance from ref as the unnormalized probabilities.
+        Sampling is vectorized using a discretized version of inverse transform sampling.
+        '''
+        xsobs = xs[:, :, self.obsmask]
+        k = refs.shape[0]  ## k < self.k possible for final batch
+        # RBFs = np.zeros((self.b, k, xs.shape[1]))
+        RBFs = np.zeros((k, self.n, xs.shape[1]))
+
+        ## Get prob tensor based on RBF dist
+        for i in range(xs.shape[1]):
+            ## cdist(metric=sqeuclidean) returns D where D[i, j] = ||x_i - x_j||^2
+            RBFs[:, :, i] = cdist(
+                refs[:, self.tidxs[i]], xsobs[:, i], metric='sqeuclidean'
+            )
+        RBFs /= self.rbfd_denom
+        RBFs = np.exp(RBFs)
+        normconst = np.sum(RBFs, axis=1, keepdims=True)  ## shape (k, 1, xs.shape[1])
+        ## each RBF[i, :, j] should be a vector of probs into xs at snapshot j cond on ref i
+        RBFs /= normconst
+
+        ## for each ref and time marginal, sample endpoints z
+        ## Batch sample using batched inverse transform sampling
+        ## RBFs_cumsum[i, :, j] contains CDF vector for ref i, marginal j
+        RBFs_cumsum = np.cumsum(RBFs, axis=1)                 ## compute CDF
+        u = self.prng.random((k, self.b, xs.shape[1]))        ## sample u ~ Unif(0, 1)
+        ## Compute CDF_inv by finding idxs where CDF > u and take first occasion
+        comp = RBFs_cumsum[:, :, None, :] > u[:, None, :, :]  ## compute CDF_inv
+        sample_idxs = np.argmax(comp, axis=1)                 ## (k, b, xs.shape[1])
+        z = xs[sample_idxs, np.arange(xs.shape[1])[None, None, :]]
+
+        return z
+
+    def _compute_marginal_mu_sigma(
+        self,
+        z: jt.Real[np.ndarray, 'k b margidx dims'],
+    ) -> tuple[jt.Real[np.ndarray, 'k margidx dims'], jt.Real[np.ndarray, 'k margidx dims dims']]:
+        '''Compute mu and Sigma based on sampled z'''
+        mus = z.mean(axis=1, keepdims=True)  ## (k, 1, margidx, dims)
+        ## get covs over batch dim
+        centered = z - mus  ## (k, b, margidx, dims)
+        covs = np.einsum('kbti,kbtj->ktij', centered, centered)
+        covs /= z.shape[1] - 1  ## (k, margidx, dims, dims)
+        mus = np.squeeze(mus, axis=1)  ## (k, margidx, dims)
+        return mus, covs
+
+    def _compute_mu_t_sigma_t_gpr(
+        self,
+        refidxs: jt.Int[np.ndarray, 'k'],
+        ts: jt.Real[np.ndarray, 'nt']
+    ) -> tuple[jt.Real[np.ndarray, 'k nt obs'], jt.Real[np.ndarray, 'k nt obs']]:
+        '''Compute mu_t and sigma_t from GPRs'''
+        mu_t_gpr = np.zeros((refidxs.shape[0], ts.shape[0], self.Xrefs.shape[-1]))
+        sigma_t_gpr = np.zeros_like(mu_t_gpr)  ## (k, nt, obs)
+        ts = ts.reshape((-1, 1))  ## (nt, 1)
+        for i, idx in enumerate(refidxs):
+            mu_i, std_i = self.gprs[idx].predict(ts, return_std=True)
+            mu_t_gpr[i] = mu_i
+            sigma_t_gpr[i] = std_i
+        return mu_t_gpr, sigma_t_gpr
+
+    def _compute_gpr_dmudt(
+        self,
+        refidxs: jt.Int[np.ndarray, 'k'],
+        ts: jt.Real[np.ndarray, 'nt']
+    ) -> jt.Real[np.ndarray, 'k nt obs']:
+
+        '''Compute time derivative of GPR mean function
+
+        Rasmussen and Williams, Gaussian Processes for Machine Learning, 2006
+        Formula (2.25)
+
+        dmu_dt = d/dt Kstar^T @ alpha
+        alpha = K^{-1} y
+        Kstar = K(xtrain, ts)
+        K = K(xtrain, xtrain)
+        y = GPR(xtrain)
+        '''
+        Xtrain = np.zeros((refidxs.shape[0], self.gpr_nt, 1))
+        Alpha = np.zeros((refidxs.shape[0], self.gpr_nt, self.nobs))
+        ts = ts.reshape((-1, 1))
+
+        if isinstance(self.gprs[0].kernel_, RBFKernel):
+            ## dKstar_dt = rbf(xtrain, xtest) * (xtrain - xtest) // ell^2
+            Scales = np.zeros((refidxs.shape[0]))
+            Kstar = np.zeros((refidxs.shape[0], self.gpr_nt, ts.shape[0]))
+            for i, idx in enumerate(refidxs):
+                gpr = self.gprs[idx]
+                kernel = gpr.kernel_
+                Xtrain[i] = gpr.X_train_
+                Alpha[i] = gpr.alpha_
+                Scales[i] = kernel.length_scale
+                Kstar[i] = kernel(Xtrain[i], ts)
+            chainrule_mult = (Xtrain - ts.T[None, ...])          ## (k, gpr_nt, nt)
+            chainrule_mult /= (Scales ** 2)[:, None, None]
+            Kstar *= chainrule_mult                              ## (k, gpr_nt, nt)
+            dmu_dt = Kstar.swapaxes(1, 2) @ Alpha                ## (k, nt, obs)
+            return dmu_dt
+        else:
+            raise ValueError(f'dmu_dt not implemented for GPR with kernel {self.gprs[0].kernel_}')
+
+    def _compute_mu_t_aug(
+        self,
+        mu_t: jt.Real[np.ndarray, 'k nt dims'],
+        mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+    ) -> jt.Real[np.ndarray, 'k nt dims']:
+        '''Compute mu_t augmented with ref data
+
+        mu_t_aug_obs = mu_t_gpr
+        mu_t_aug_hid = t mu_1 + (1 - t) mu_0
+        mu_t_aug = (mu_t_aug_obs, mu_t_aug_hid)
+        '''
+        mu_t_aug = np.zeros_like(mu_t)
+        mu_t_aug[:, :, self.obsmask] = mu_t_gpr
+        mu_t_aug[:, :, self.hidmask] = mu_t[:, :, self.hidmask]
+        return mu_t_aug
+
+    def _compute_mu_t_aug_prime(
+        self,
+        refidxs: jt.Int[np.ndarray, 'k'],
+        ts: jt.Real[np.ndarray, 'nt'],
+        mus: jt.Real[np.ndarray, 'k margidx dims']
+    ) -> jt.Real[np.ndarray, 'k nt dims']:
+        r'''Compute \mu_t_prime augmented with ref data
+
+        mu_t_aug_prime_obs = mu_t_gpr_prime
+        mu_t_aug_prime_hid = mu_1 - mu_0
+        mu_t_aug_prime = (mu_t_aug_prime_obs, mu_t_aug_prime_hid)
+        '''
+        mu_t_aug_prime = np.zeros((refidxs.shape[0], ts.shape[0], mus.shape[-1]))
+        mu_t_gpr_prime = self._compute_gpr_dmudt(refidxs, ts)
+        mu_t_aug_prime[:, :, self.obsmask] = mu_t_gpr_prime
+        mu_t_hid_prime = mus[:, 1, self.hidmask] - mus[:, 0, self.hidmask]
+        mu_t_aug_prime[:, :, self.hidmask] = mu_t_hid_prime[:, None]
+        return mu_t_aug_prime
+
+    def _compute_xt_diff(
+        self,
+        xt: jt.Real[np.ndarray, 'k b nt dims'],
+        mu_t: jt.Real[np.ndarray, 'k nt dims']
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        '''Convenience method to compute xt - mu_t'''
+        return xt - mu_t[:, None]
+
+    ## Flow Matching Mixin Method Signatures
+    @abstractmethod
+    def _sample_ts(self) -> jt.Float64[np.ndarray, 'nt']:
+        '''Samples batch of times using TimeMixin'''
+        raise NotImplementedError
+
+    ## TODO
+    ## All mixin methods, ordered by call order in __next__()
+    @abstractmethod
+    def _compute_mu_t(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        mus: jt.Real[np.ndarray, 'k margidx dims'],
+    ) -> jt.Real[np.ndarray, 'k nt dims']:
+        raise NotImplementedError
+
+    ## AFMixin
+    @overload
+    def _compute_sigma_t(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims']
+    ) -> tuple[jt.Real[np.ndarray, 'k nt dims dims'], jt.Real[np.ndarray, 'k dims dims']]:
+        ...
+
+    ## IFCBMixin
+    @overload
+    def _compute_sigma_t(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims']
+    ) -> tuple[float, None]:
+        ...
+
+    ## IFSBMixin
+    @overload
+    def _compute_sigma_t(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims']
+    ) -> tuple[jt.Real[np.ndarray, 'nt'], jt.Real[np.ndarray, 'nt']]:
+        ...
+
+    @abstractmethod
+    def _compute_sigma_t(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims']
+    ) -> tuple[Sigma_T, Aux]:
+        raise NotImplementedError
+
+    ## AFMixin
+    @overload
+    def _sample_xt(
+        self,
+        refidxs: jt.Int[np.ndarray, 'k'],
+        mu_t: jt.Real[np.ndarray, 'k nt dims'],
+        Sigma_t: jt.Real[np.ndarray, 'k nt dims dims'],
+        mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+        sigma_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        ...
+
+    ## IFCBMixin
+    @overload
+    def _sample_xt(
+        self,
+        refidxs: jt.Int[np.ndarray, 'k'],
+        mu_t: jt.Real[np.ndarray, 'k nt dims'],
+        Sigma_t: float,
+        mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+        sigma_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        ...
+
+    ## IFSBMixin
+    @overload
+    def _sample_xt(
+        self,
+        refidxs: jt.Int[np.ndarray, 'k'],
+        mu_t: jt.Real[np.ndarray, 'k nt dims'],
+        Sigma_t: jt.Real[np.ndarray, 'nt'],
+        mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+        sigma_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        ...
+
+    @abstractmethod
+    def _sample_xt(
+        self,
+        refidxs: jt.Int[np.ndarray, 'k'],
+        mu_t: jt.Real[np.ndarray, 'k nt dims'],
+        Sigma_t: Sigma_T,
+        mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+        sigma_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        raise NotImplementedError
+
+    ## AFMixin
+    @overload
+    def _compute_A_t_prime_A_t_inv(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        aux: jt.Real[np.ndarray, 'k dims dims']
+    ) -> jt.Real[np.ndarray, 'k nt dims dims']:
+        ...
+
+    ## IFCBMixin
+    @overload
+    def _compute_A_t_prime_A_t_inv(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        aux: None
+    ) -> None:
+        ...
+
+    ## IFSBMixin
+    @overload
+    def _compute_A_t_prime_A_t_inv(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        aux: jt.Real[np.ndarray, 'nt']
+    ) -> jt.Real[np.ndarray, 'nt']:
+        ...
+
+    @abstractmethod
+    def _compute_A_t_prime_A_t_inv(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        aux: Aux
+    ) -> A_T_Prime_A_T_Inv:
+        raise NotImplementedError
+
+    ## AFMixin
+    @overload
+    def _compute_ut(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        mu_t_prime: jt.Real[np.ndarray, 'k nt dims'],
+        A_t_prime_A_t_inv: jt.Real[np.ndarray, 'k nt dims dims']
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        ...
+
+    ## IFCBMixin
+    @overload
+    def _compute_ut(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        mu_t_prime: jt.Real[np.ndarray, 'k nt dims'],
+        A_t_prime_A_t_inv: None
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        ...
+
+    ## IFSBMixin
+    @overload
+    def _compute_ut(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        mu_t_prime: jt.Real[np.ndarray, 'k nt dims'],
+        A_t_prime_A_t_inv: jt.Real[np.ndarray, 'nt']
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        ...
+
+    @abstractmethod
+    def _compute_ut(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        mu_t_prime: jt.Real[np.ndarray, 'k nt dims'],
+        A_t_prime_A_t_inv: A_T_Prime_A_T_Inv
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        raise NotImplementedError
+
+    ## Score Matching Mixin Method Signatures
+    ## ASMixin
+    @overload
+    def _compute_lowrank_U(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims'],
+        sigma_t: jt.Real[np.ndarray, 'nt'] | float
+    ) -> jt.Real[np.ndarray, 'k nt dims obs']:
+        ...
+
+    ## NSMixin
+    @overload
+    def _compute_lowrank_U(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims'],
+        sigma_t: jt.Real[np.ndarray, 'nt'] | float
+    ) -> None:
+        ...
+
+    @abstractmethod
+    def _compute_lowrank_U(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims'],
+        sigma_t: Sigma_T,
+    ) -> jt.Real[np.ndarray, 'k nt dims obs'] | None:
+        raise NotImplementedError
+
+    ## ASMixin
+    @overload
+    def _compute_score(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        sigma_t: jt.Real[np.ndarray, 'nt'] | float,
+        U_t: jt.Real[np.ndarray, 'k nt dims obs']
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        ...
+
+    ## NSMixin
+    @overload
+    def _compute_score(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        sigma_t: jt.Real[np.ndarray, 'nt'] | float,
+        U_t: None
+    ) -> None:
+        ...
+
+    @overload
+    def _compute_score(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        sigma_t: jt.Real[np.ndarray, 'nt'] | float,
+        U_t: jt.Real[np.ndarray, 'k nt dims obs']
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        ...
+
+    @overload
+    def _compute_score(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        sigma_t: jt.Real[np.ndarray, 'nt'] | float,
+        U_t: None
+    ) -> None:
+        ...
+
+    @abstractmethod
+    def _compute_score(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        sigma_t: Sigma_T,
+        U_t: jt.Real[np.ndarray, 'k nt dims obs'] | None
+    ) -> jt.Real[np.ndarray, 'k b nt dims'] | None:
+        raise NotImplementedError
+
+    def __iter__(self) -> Self:
+        '''First resets iteration state, then returns self'''
+        self._iteridx = -1  ## -1 instead of 0 because next() increments first
+        self.prng.shuffle(self._Xrefidxs)
+        return self
+
+    def __next__(self) -> tuple[jt.Float32[Tensor, 'batch 1'], jt.Float32[Tensor, 'batch dims'], jt.Float32[Tensor, 'batch dims'], jt.Float32[Tensor, 'batch dims'] | None]:
+        if self._iteridx < self._sentinel:
+            self._iteridx += 1
+            ## Hacky iteration to get idxs[i:i+k]
+            ## TODO: use internal bound generator rather than this clunky expr?
+            refidxs = self._Xrefidxs[self._iteridx*self.k:(self._iteridx+1)*self.k]
+            ## Sample k refs
+            refs = self.Xrefs[refidxs]
+
+            ## Independently sample minibatch
+            xs = self._get_xs_minibatch()
+
+            ## Resample according to refs
+            z = self._sample_z_given_refs(xs, refs)
+            mus, covs = self._compute_marginal_mu_sigma(z)
+
+            ## Sample t according to chosen law
+            ts = self._sample_ts()
+
+            mu_t = self._compute_mu_t(ts, mus)
+            Sigma_t, aux = self._compute_sigma_t(ts, covs)
+            mu_t_gpr, sigma_t_gpr = self._compute_mu_t_sigma_t_gpr(refidxs, ts)
+            xt = self._sample_xt(refidxs, mu_t, Sigma_t, mu_t_gpr, sigma_t_gpr)
+            mu_t_aug = self._compute_mu_t_aug(mu_t, mu_t_gpr)
+            mu_t_aug_prime = self._compute_mu_t_aug_prime(refidxs, ts, mus)
+            xt_diff = self._compute_xt_diff(xt, mu_t_aug)
+            A_t_prime_A_t_inv = self._compute_A_t_prime_A_t_inv(ts, aux)
+            ut = self._compute_ut(xt_diff, mu_t_aug_prime, A_t_prime_A_t_inv)
+
+            U_t = self._compute_lowrank_U(ts, covs, Sigma_t)
+            st = self._compute_score(xt_diff, Sigma_t, U_t)
+
+            ## Flatten and cast into Tensors of shape (k*b*nt, dims)
+            ## Also cast to float32 for compatibility with default torch float operations
+            ## TODO: rename with different suffix instead of _t?
+            ts = np.broadcast_to(ts[None, None, :, None], (*xt.shape[:-1], 1))
+            ts = torch.from_numpy(ts.reshape((-1, 1)).astype(np.float32))
+            xt = torch.from_numpy(xt.reshape((-1, xt.shape[-1])).astype(np.float32))
+            ut = torch.from_numpy(ut.reshape((-1, ut.shape[-1])).astype(np.float32))
+            if st is not None:
+                st = torch.from_numpy(st.reshape((-1, st.shape[-1])).astype(np.float32))
+
+            return ts, xt, ut, st
+            # return mu_t, mu_t_gpr, sigma_t_gpr
+
+        else:
+            raise StopIteration
+
+
+class UniformTimeMixin:
+    '''Samples batch of times from Unif(0, 1)'''
+
+    def _sample_ts(self) -> jt.Float64[np.ndarray, 'nt']:
+        return self.prng.random(size=self.nt)
+
+
+class BetaTimeMixin:
+    '''Samples batch of times from Beta(a, a)'''
+
+    def _sample_ts(self) -> jt.Float64[np.ndarray, 'nt']:
+        return self.prng.beta(self.beta_a, self.beta_a, size=self.nt)
+
+
+## TODO: Add decorator for Random Fourier Features on time mixin?
+
+
+class AFMixin:
+    '''Anisotropic Flow Mixin
+
+    All methods are coupled!
+    '''
+
+    def _compute_mu_t(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        mus: jt.Real[np.ndarray, 'k margidx dims'],
+    ) -> jt.Real[np.ndarray, 'k nt dims']:
+        r'''Compute mu_t for W2 geodesic between MVNs
+
+        \mu_t = t \mu_1 + (1 - t) \mu_0
+        '''
+        return batch_interp(mus[:, 0], mus[:, 1], ts)         ## (k, nt, dims)
+
+    def _compute_sigma_t(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims']
+    ) -> tuple[jt.Real[np.ndarray, 'k nt dims dims'], jt.Real[np.ndarray, 'k dims dims']]:
+        r'''Compute Sigma_t for W2 geodesic between MVNs
+
+        C = \Sigma_1^{1/2} (\Sigma_1^{1/2} \Sigma_0 \Sigma_1^{1/2})^{-1/2} \Sigma_1^{1/2}
+        C_t = tC + (1 - t)I
+        \Sigma_t = C_t \Sigma_0 C_t
+
+        Beware numerical errors resulting in non-symmetric matrices!
+        '''
+        Sigma_1_sqrt = batch_sqrtm(covs[:, 1])                ## (k, dims, dims)
+        Sigma_101 = Sigma_1_sqrt @ covs[:, 0] @ Sigma_1_sqrt
+        ## Regularize to avoid bad matrix
+        Sigma_101 += np.eye(Sigma_101.shape[-1])[None, ...] * self.reg
+        Sigma_101_inv_sqrt = batch_inv_sqrtm(Sigma_101)
+        C = Sigma_1_sqrt @ Sigma_101_inv_sqrt @ Sigma_1_sqrt  ## (k, dims, dims)
+        I = np.eye(C.shape[-1])[None, ...]                    ## (1, dims, dims)
+        C_t = batch_interp(I, C, ts)                          ## (k, nt, dims, dims)
+        Sigma_t = C_t @ covs[:, 0][:, None] @ C_t             ## (k, nt, dims, dims)
+        return Sigma_t, C
+
+    def _sample_xt(
+        self,
+        refidxs: jt.Int[np.ndarray, 'k'],
+        mu_t: jt.Real[np.ndarray, 'k nt dims'],
+        Sigma_t: jt.Real[np.ndarray, 'k nt dims dims'],
+        mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+        sigma_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        '''Sample xt
+
+        First sample xt_obs using mu_t and sigma_t from GPR
+        Then compute conditional mu_t_hid|obs and Sigma_t_hid|obs
+        Use conditional params to sample xt_hid
+        Return xt = (xt_obs, xt_hid)
+
+        Beware numerical errors resulting in non-symmetric matrices!
+        '''
+        xt = np.zeros((refidxs.shape[0], self.b, self.nt, self.dim))
+
+        ## First compute xt_obs from mu_gpr, sigma_gpr
+        eps = self.prng.normal(size=(*xt.shape[:3], self.nobs))
+        ## Assume sigma_gpr is list of stddevs
+        ## ==> ref vars have 0 covariance == indep
+        xt_obs = (sigma_t_gpr[:, None] * eps) + mu_t_gpr[:, None]
+
+        ## Next compute conditional mu_t_hid|obs and sigma_t_hid|obs
+        Sigma_t_hidobs = Sigma_t[:, :, *self.hidobsmask]                  ## (k, nt, hid, obs)
+        Sigma_t_obsobs = Sigma_t[:, :, *self.obsobsmask]              ## (k, nt, obs, obs)
+        Sigma_t_obsobs_inv = batch_inv(Sigma_t_obsobs)                ## (k, nt, obs, obs)
+        B = Sigma_t_hidobs @ Sigma_t_obsobs_inv                           ## (k, nt, hid, obs)
+
+        obs_diff = xt_obs - mu_t[:, None, :, self.obsmask]                ## (k, b, nt, obs)
+        ## basically computes B @ obs_diff w/ correct broadcasting
+        # cond_mu_t = np.einsum('ktho,kbto->kbth', B, obs_diff)             ## (k, b, nt, hid)
+        cond_mu_t = np.matvec(B[:, None], obs_diff)
+        # cond_mu_t = B[:, None] @ obs_diff[:, :, :, :, None]               ## (k, b, nt, hid, 1)
+        # cond_mu_t = cond_mu_t.squeeze(axis=4)                             ## (k, b, nt, hid)
+
+        cond_Sigma_t = B @ Sigma_t[:, :, *self.obshidmask]
+        cond_Sigma_t = Sigma_t[:, :, *self.hidhidmask] - cond_Sigma_t     ## (k, nt, hid, hid)
+        cond_Sigma_t += np.eye(cond_Sigma_t.shape[-1])[None, ...] * self.reg
+
+        cond_A_t = batch_sqrtm(cond_Sigma_t)                              ## (k, nt, hid, hid)
+
+        ## Sample xt_hid|obs
+        eps = self.prng.normal(size=cond_mu_t.shape)                      ## (k, b, nt, hid)
+        ## xt_hid vars have nonzero covariance
+        # xt_hid = np.einsum('ktij,kbtj->kbti', cond_A_t, eps)              ## (k, b, nt, hid)
+        xt_hid = np.matvec(cond_A_t[:, None], eps)
+        # xt_hid = cond_A_t[:, None] @ eps[:, :, :, :, None]                ## (k, b, nt, hid, 1)
+        # xt_hid = xt_hid.squeeze(axis=4) + cond_mu_t                       ## (k, b, nt, hid)
+
+        xt[:, :, :, self.obsmask] = xt_obs
+        xt[:, :, :, self.hidmask] = xt_hid
+        return xt
+
+    def _compute_A_t_prime_A_t_inv(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        aux: jt.Real[np.ndarray, 'k dims dims']
+    ) -> jt.Real[np.ndarray, 'k nt dims dims']:
+        r'''Compute A_t_prime @ A_t_inv for A_t A_t^T = Sigma_t
+
+        C \gets aux
+
+        A_t = C_t Q_C \Lambda_C^{1/2}
+
+        A_t^\prime = C_t^\prime Q_0 \Lambda_0^{1/2}
+
+        A_t^{-1} = \Lambda_0^{-1/2} Q_0^{-1} C_t^{-1}
+
+        A_t^\prime A_t^{-1} = C_t^\prime Q_0 \Lambda_0^{1/2} \Lambda_0^{-1/2} Q_0^{-1} C_t^{-1}
+                            = C_t^\prime C_t^{-1}
+
+        C_t^\prime = C - I
+
+        C_t^{-1} = Q_C (t \Lambda_C + (1 - t)I)^{-1} Q_C^{-1}
+        '''
+        I = np.eye(self.dim)
+        C = aux
+        C_t_prime = C - I[None, ...]
+
+        L_C, Q_C = np.linalg.eigh(C)
+        L_C_t_inv = 1 / batch_interp(np.ones(self.dim)[None, ... ], L_C, ts)
+        C_t_inv = Q_C[:, None] \
+                  @ np.apply_along_axis(np.diag, -1, L_C_t_inv) \
+                  @ Q_C[:, None].swapaxes(-1, -2)
+        return C_t_prime[:, None, ...] @ C_t_inv
+
+    def _compute_ut(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        mu_t_prime: jt.Real[np.ndarray, 'k nt dims'],
+        A_t_prime_A_t_inv: jt.Real[np.ndarray, 'k nt dims dims']
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        '''Compute ut = A_t_prime @ A_t_inv (xt - mu_t) + mu_t_prime'''
+        # Ax = np.einsum('ktij,kbtj->kbti', A_t_prime_A_t_inv, xt_diff)
+        Ax = np.matvec(A_t_prime_A_t_inv[:, None], xt_diff)
+        # A_t_xtdiff = A_t_prime_inv[:, None] @ xt_diff[:, :, :, :, None]  ## (k, b, nt, dims, 1)
+        # A_t_xtdiff = A_t_xtdiff.squeeze(axis=4)                          ## (k, b, nt, dims)
+        # ut = A_t_xtdiff + mu_t_prime[:, None]                            ## (k, b, nt, dims)
+        # return ut
+        return Ax + mu_t_prime[:, None]
+
+
+class IFCBMixin:
+    '''Isotropic Flow Constant Bridge Mixin
+
+    All exposed methods are coupled!
+    '''
+
+    def _compute_mu_t(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        mus: jt.Real[np.ndarray, 'k margidx dims'],
+    ) -> jt.Real[np.ndarray, 'k nt dims']:
+        '''Compute mu_t of constant bridge'''
+        return batch_interp(mus[:, 0], mus[:, 1], ts)  ## (k, nt, dims)
+
+    def _compute_sigma_t(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims']
+    ) -> tuple[float, None]:
+        '''Compute sigma_t of constant bridge
+
+        Args ts, covs are ignored. Only kept for consistent method signature.'''
+        del ts, covs
+
+        return self.sigma, None
+
+    def _sample_xt(
+        self,
+        refidxs: jt.Int[np.ndarray, 'k'],
+        mu_t: jt.Real[np.ndarray, 'k nt dims'],
+        Sigma_t: float,
+        mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+        sigma_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        '''Sample xt from N(mu_t_aug, sigma_t * I)
+
+        Use mu_t and mu_t_gpr instead of precomputing mu_t_aug
+        to keep method call order consistent with AFMixin.
+
+        Args refidxs, sigma_t_gpr are ignored.
+        '''
+        del refidxs, sigma_t_gpr
+
+        k = mu_t.shape[0]
+        eps = self.prng.normal(size=(k, self.b, self.nt, self.dim))
+        xt = np.zeros_like(eps)
+        # sigma_eps = Sigma_t.reshape((1, 1, self.nt, 1)) * eps
+        sigma_eps = Sigma_t * eps
+        xt[:, :, :, self.obsmask] = sigma_eps[:, :, :, self.obsmask] + mu_t_gpr[:, None]
+        xt[:, :, :, self.hidmask] = sigma_eps[:, :, :, self.hidmask] + mu_t[:, None, :, self.hidmask]
+        return xt
+
+    def _compute_A_t_prime_A_t_inv(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        aux: None,
+    ) -> None:
+        '''Compute sigma_t_prime * sigma_t_inv
+
+        sigma_t_prime = 0 so the product = 0.
+        No variance correction so return None
+        '''
+        del ts, aux
+
+        # if self.sb:
+            # sigma_t_prime_sigma_t_inv = (1 - (2 * ts)) / (2 * aux)
+        return None
+
+    def _compute_ut(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        mu_t_prime: jt.Real[np.ndarray, 'k nt dims'],
+        A_t_prime_A_t_inv: None
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        '''Compute ut = sigma_t_prime * sigma_t_inv (xt - mu_t) + mu_t_prime
+
+        For the constant bridge, sigma_t_prime == 0
+        so only need to return mu_t_prime.
+
+        Args xt_diff, A_t_prime_A_t_inv are ignored.
+        '''
+        del xt_diff, A_t_prime_A_t_inv
+
+        k = mu_t_prime.shape[0]
+        return np.broadcast_to(mu_t_prime[:, None], (k, self.b, self.nt, self.dim))
+
+
+class IFSBMixin:
+    '''Isotropic Flow Schrodinger Bridge Mixin
+
+    All exposed methods are coupled!
+    '''
+
+    def _compute_mu_t(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        mus: jt.Real[np.ndarray, 'k margidx dims'],
+    ) -> jt.Real[np.ndarray, 'k nt dims']:
+        '''Compute mu_t of Schrodinger bridge'''
+        return batch_interp(mus[:, 0], mus[:, 1], ts)  ## (k, nt, dims)
+
+    def _compute_sigma_t(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims']
+    ) -> tuple[jt.Real[np.ndarray, 'nt'], jt.Real[np.ndarray, 'nt']]:
+        '''Compute sigma_t of Schrodinger bridge
+
+        sigma_t = sigma * sqrt(t * (1 - t))
+
+        Additionally returns t * (1 - t) for reuse in A_t_prime_A_t_inv
+        Arg covs is ignored.
+        '''
+        del covs
+
+        aux = self.sb_reg + (ts * (1 - ts))
+        sigma_t = self.sigma * np.sqrt(aux)
+        return sigma_t, aux
+
+    def _sample_xt(
+        self,
+        refidxs: jt.Int[np.ndarray, 'k'],
+        mu_t: jt.Real[np.ndarray, 'k nt dims'],
+        Sigma_t: jt.Real[np.ndarray, 'nt'],
+        mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
+        sigma_t_gpr: jt.Real[np.ndarray, 'k nt obs']
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        '''Sample xt from N(mu_t_aug, sigma_t * I)
+
+        Use mu_t and mu_t_gpr instead of precomputing mu_t_aug
+        to keep method call order consistent with AFMixin.
+
+        Args refidxs, sigma_t_gpr are ignored.
+        '''
+        del refidxs, sigma_t_gpr
+
+        k = mu_t.shape[0]
+        eps = self.prng.normal(size=(k, self.b, self.nt, self.dim))
+        xt = np.zeros_like(eps)
+        # sigma_eps = Sigma_t.reshape((1, 1, self.nt, 1)) * eps
+        sigma_eps = Sigma_t[None, None, :, None] * eps
+        xt[:, :, :, self.obsmask] = sigma_eps[:, :, :, self.obsmask] + mu_t_gpr[:, None]
+        xt[:, :, :, self.hidmask] = sigma_eps[:, :, :, self.hidmask] + mu_t[:, None, :, self.hidmask]
+        return xt
+
+    def _compute_A_t_prime_A_t_inv(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        aux: jt.Real[np.ndarray, 'nt']
+    ) -> jt.Real[np.ndarray, 'nt']:
+        '''Compute sigma_t_prime * sigma_t_inv
+
+        sigma_t = sigma * sqrt(t * (1 - t))
+        sigma_t_prime = sigma * 0.5 * (1 - 2t) / sqrt(t * (1 - t))
+        sigma_t_prime * sigma_t_inv = 0.5 * (1 - 2t) / (t * (1 - t))
+
+        aux <- t * (1 - t) computed at self._compute_sigma_t()
+        '''
+        return 0.5 * (1 - (2 * ts)) / aux
+
+    def _compute_ut(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        mu_t_prime: jt.Real[np.ndarray, 'k nt dims'],
+        A_t_prime_A_t_inv: jt.Real[np.ndarray, 'nt']
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        '''Compute ut = sigma_t_prime * sigma_t_inv (xt - mu_t) + mu_t_prime'''
+        Ax = A_t_prime_A_t_inv[None, None, :, None] * xt_diff
+        return Ax + mu_t_prime[:, None]
+
+
+class ASMixin:
+    '''Anisotropic Score Mixin
+
+    Currently only compatible with IFMixins
+    '''
+
+    ## TODO: Where to get I_obs from?
+    def _compute_lowrank_U(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims'],
+        sigma_t: jt.Real[np.ndarray, 'nt'] | float,
+    ) -> jt.Real[np.ndarray, 'k nt dims obs']:
+        '''Compute low-rank U = [I_obs B_map]'''
+        I = np.ones(self.nobs)  ## (obs)
+        if isinstance(sigma_t, float):
+            ## sigma_t from IFCBMixin
+            I = np.diag(sigma_t * I)[None, None, ...]  ## (1, 1, obs, obs)
+        else:
+            ## sigma_t from IFSBMixin ==> sigma_t is np.ndarray
+            I = sigma_t[:, None] * I[None, :]  ## (nt, obs)
+            I = np.apply_along_axis(np.diag, -1, I)[None, ...] ## (1, nt, obs, obs)
+        I_obs = np.broadcast_to(I, (covs.shape[0], self.nt, self.nobs, self.nobs))
+
+        Sigma_1_sqrt = batch_sqrtm(covs[:, 1])                ## (k, dims, dims)
+        Sigma_101 = Sigma_1_sqrt @ covs[:, 0] @ Sigma_1_sqrt
+        ## Regularize to avoid bad matrix
+        Sigma_101 += np.eye(Sigma_101.shape[-1])[None, ...] * self.reg
+        Sigma_101_inv_sqrt = batch_inv_sqrtm(Sigma_101)
+        C = Sigma_1_sqrt @ Sigma_101_inv_sqrt @ Sigma_1_sqrt  ## (k, dims, dims)
+        I = np.eye(C.shape[-1])[None, ...]                    ## (1, dims, dims)
+        C_t = batch_interp(I, C, ts)                          ## (k, nt, dims, dims)
+        ## Overwrites (locally bound) Sigma_t variable!
+        Sigma_t = C_t @ covs[:, 0][:, None] @ C_t             ## (k, nt, dims, dims)
+
+        Sigma_t_ho = Sigma_t[:, :, *self.hidobsmask]          ## (k, nt, hid, obs)
+        Sigma_t_oo = Sigma_t[:, :, *self.obsobsmask]
+        Sigma_t_oo_inv = np.linalg.inv(Sigma_t_oo)            ## (k, nt, obs, obs)
+        B_t_map = Sigma_t_ho @ Sigma_t_oo_inv                 ## (k, nt, hid, obs)
+
+        return np.concatenate((I_obs, B_t_map), axis=2)       ## (k, nt, dims, obs)
+
+    ## TODO: flesh out docstring and double check algebra
+    def _compute_score(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        sigma_t: jt.Real[np.ndarray, 'nt'] | float,
+        U_t: jt.Real[np.ndarray, 'k nt dims obs']
+    ) -> jt.Real[np.ndarray, 'k b nt dims']:
+        '''Compute score = -Sigma_t_inv @ (xt - mu_t)
+
+        Notation:
+        y = mu_t - xt ==> score = Sigma_t_inv @ y
+        Sigma_t_inv = (sigma_t^2 * I + (U @ U^T))^{-1}
+
+        Using Woodbury Identity:
+
+        score = Sigma_t_inv @ y
+              = (alpha * I - alpha * U @ (I + alpha * U @ U^T)^{-1} alpha * U^T) @ y
+              = alpha (y - U @ (I + alpha * U @ U^T)^{-1} alpha * U^T @ y)
+
+        where:
+        alpha = 1 / sigma_t ** 2
+
+        Let:
+        M = (I + alpha * U @ U^T)^{-1}
+        to rewrite the score as
+
+        score = alpha (y - U @ M @ (alpha * U^T @ y))
+
+        The fact that the score is a matrix-vector product is convenient.
+        It allows for the actual computation of matrix multiplications
+        to be computed using repeated matrix-vector product reductions
+        from right to left.
+
+        Goal is to reduce total number of computations.
+
+        Computation costs:
+        M                                     : O(dims * obs ** 2)
+        alpha * U^T @ y                       : O(obs * dims)
+        M @ (alpha * U^T @ y)                 : O(obs ** 2)
+        U @ M @ (alpha * U^T @ y)             : O(obs * dims)
+        alpha (y - U @ M @ (alpha * U^T @ y)) : O(dims)
+
+        Thus, the score computation has cost O(dims * obs ** 2).
+        '''
+        ## Any commented O(.) notation omits batch dimensions
+        alpha = 1 / (sigma_t ** 2)  ## (nt)
+        if isinstance(sigma_t, float):
+            alpha = np.broadcast_to(alpha, xt_diff.shape[2])
+        y = -xt_diff  ## (k, b, nt, dims)
+
+        ## 1) O(obs * dims), (k, b, nt, obs)
+        UTy = np.matvec(U_t.swapaxes(-1, -2)[:, None], y)
+        ## 2) O(obs), (k, b, nt, obs)
+        alphaUTy = alpha[None, None, :, None] * UTy
+        ## 3) O(obs**2 * dims), (k, nt, obs, obs)
+        I_obs = np.eye(self.nobs)[None, None]  ## (1, 1, obs, obs)
+        UTU = U_t.swapaxes(-1, -2) @ U_t  ## (k, nt, obs, obs)
+        M = I_obs + (alpha[None, :, None, None] * UTU)  ## (k, nt, obs, obs)
+        ## 4) O(obs**3), (k, nt, obs, obs)
+        M = np.linalg.inv(M)
+        ## 5) O(obs**2), (k, b, nt, obs)
+        MalphaUTy = np.matvec(M[:, None], alphaUTy)
+        ## 6) O(obs * dims), (k, b, nt, dims)
+        w = np.matvec(U_t[:, None], MalphaUTy)
+        ## 7) O(dims), (k, b, nt, dims)
+        return alpha[None, None, :, None] * (y - w)
+
+
+## TODO: Add class StableASMixin returning scaled score?
+class StableASMixin:
+    pass
+
+
+class NSMixin:
+    '''No Score Mixin'''
+
+    def _compute_lowrank_U(
+        self,
+        ts: jt.Real[np.ndarray, 'nt'],
+        covs: jt.Real[np.ndarray, 'k margidx dims dims'],
+        sigma_t: jt.Real[np.ndarray, 'nt'] | float,
+    ) -> None:
+        return None
+
+    def _compute_score(
+        self,
+        xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
+        sigma_t: jt.Real[np.ndarray, 'nt'] | float,
+        U_t: None
+    ) -> None:
+        return None
+
+
+def build_sampler_class(
+    time_sampler: Literal['uniform', 'beta'],
+    flow_shape: Literal['isotropic', 'anisotropic'],
+    flow_bridge: Literal['constant', 'schrodinger'],
+    score_shape: Literal['null', 'anisotropic']
+) -> GCFMSamplerBase:
+    if time_sampler == 'uniform':
+        time_mixin = UniformTimeMixin
+    elif time_sampler == 'beta':
+        time_mixin = BetaTimeMixin
+    else:
+        raise ValueError(f'Unsupported time sampler "{time_sampler}"')
+
+    if flow_shape == 'isotropic':
+        if flow_bridge == 'constant':
+            flow_mixin = IFCBMixin
+        elif flow_bridge == 'schrodinger':
+            flow_mixin = IFSBMixin
+        else:
+            raise ValueError(f'Unsupported flow bridge "{flow_bridge}"')
+    elif flow_shape == 'anisotropic':
+        flow_mixin = AFMixin
+    else:
+        raise ValueError(f'Unsupported flow shape "{flow_shape}"')
+
+    if score_shape == 'null':
+        score_mixin = NSMixin
+    elif score_shape == 'anisotropic':
+        score_mixin = ASMixin
+    else:
+        raise ValueError(f'Unsupported score shape "{score_shape}"')
+
+    bases = (time_mixin, flow_mixin, score_mixin, GCFMSamplerBase)
+    return type('GCFMSampler', bases, {})
+
 
 def main() -> None:
     import matplotlib.pyplot as plt
@@ -1158,6 +2320,8 @@ def main() -> None:
         OBS,
         DATADIR
     )
+
+
 
     experiment = 'mix_ics'
     data = np.load(os.path.join(DATADIR, experiment, 'data.npy'))  ## (drugcombs, N, T, *dims)
@@ -1188,20 +2352,66 @@ def main() -> None:
     print('Xs shape', Xs.shape)
     print('Xrefs shape', Xrefs.shape)
 
-    k = 4
-    n = 128
-    b = 8
-    nt = 10
-    # k = 1
-    # b = 1
-    # nt = 1
+    k = 2
+    n = 16
+    b = 4
+    nt = 8
     rbfk_scale = 0.1
-    rbfk_bounds = (0.05, 5)
+    # rbfk_bounds = (0.05, 5)
+    rbfk_bounds = 'fixed'
     gpr_nt = 10
     rbfd_scale = 1.
     reg = 1e-8
+    sigma = 1.0
+    sb_reg = 1e-8
+    beta_a = 2.0
     seed = 1000
-    sampler = TrajAugCFMSampler(
+    # sampler = TrajAugCFMSampler(
+        # Xs,
+        # Xrefs,
+        # obsmask,
+        # tidxs,
+        # k,
+        # n,
+        # b,
+        # nt,
+        # rbfk_scale=rbfk_scale,
+        # rbfk_bounds=rbfk_bounds,
+        # gpr_nt=gpr_nt,
+        # rbfd_scale=rbfd_scale,
+        # reg=reg,
+        # seed=seed,
+        # fixgif=False,
+        # fixgif_sigma='const',
+        # fixgif_sigma_scale=sigma,
+        # fixgif_sigma_eps=sb_reg,
+        # time_sample='uniform',
+        # time_beta_a=beta_a,
+        # score_gauss=False,
+    # )
+    # for_sampler = TrajAugCFMSamplerForLoop(
+        # Xs,
+        # Xrefs,
+        # obsmask,
+        # tidxs,
+        # k,
+        # n,
+        # b,
+        # nt,
+        # rbfk_scale=rbfk_scale,
+        # rbfk_bounds=rbfk_bounds,
+        # gpr_nt=gpr_nt,
+        # rbfd_scale=rbfd_scale,
+        # reg=reg,
+        # seed=seed,
+    # )
+    GCFMSampler = build_sampler_class(
+        time_sampler='uniform',
+        flow_shape='isotropic',
+        flow_bridge='schrodinger',
+        score_shape='anisotropic'
+    )
+    gcfm_sampler = GCFMSampler(
         Xs,
         Xrefs,
         obsmask,
@@ -1215,70 +2425,29 @@ def main() -> None:
         gpr_nt=gpr_nt,
         rbfd_scale=rbfd_scale,
         reg=reg,
+        sigma=sigma,
+        sb_reg=sb_reg,
+        beta_a=beta_a,
         seed=seed,
     )
-    for_sampler = TrajAugCFMSamplerForLoop(
-        Xs,
-        Xrefs,
-        obsmask,
-        tidxs,
-        k,
-        n,
-        b,
-        nt,
-        rbfk_scale=rbfk_scale,
-        rbfk_bounds=rbfk_bounds,
-        gpr_nt=gpr_nt,
-        rbfd_scale=rbfd_scale,
-        reg=reg,
-        seed=seed,
-    )
+    print(gcfm_sampler.get_mixin_names())
 
     batch_size = None
-    loader = DataLoader(sampler, batch_size=batch_size)
-    for_loader = DataLoader(for_sampler, batch_size=batch_size)
+    # loader = DataLoader(sampler, batch_size=batch_size)
+    # for_loader = DataLoader(for_sampler, batch_size=batch_size)
+    gcfm_loader = DataLoader(gcfm_sampler, batch_size=batch_size)
     # print(len(loader))
     # print(len(for_loader))
-    diffs = np.zeros((len(sampler), 3))
-    for i, (a, b) in enumerate(zip(loader, for_loader)):
-        for j in range(3):
-            diffs[i, j] = (a[j] - b[j]).detach().cpu().numpy().mean()
-        # print('compare refidxs', torch.all(a[0] - b[0] == 0).item())
-        # print('compare xs', torch.all(a[1] - b[1] == 0).item())
-        # print('compare z', torch.all(a[2] - b[2] == 0).item())
-        # print('compare mus', torch.all(a[3] - b[3] == 0).item())
-        # print('compare covs', torch.all(a[4] - b[4] == 0).item())
-        # print('compare covs diff', torch.sum(a[4] - b[4] == 0).item())
-        # print('compare covs close', torch.allclose(a[4], b[4]))
-        # print('compare ts', torch.all(a[5] - b[5] == 0).item())
-        # print('compare xt', torch.all(a[6] - b[6] == 0).item())
-        # print('compare xt close', torch.allclose(a[6], b[6]))
-        # print('compare gprdmudt', torch.all(a[7] - b[7] == 0).item())
-        # print('compare gprdmudt close', torch.allclose(a[7], b[7]))
-#
-        # print('compare mu_t', torch.all(a[8] - b[8] == 0).item())
-        # print('compare C', torch.all(a[9] - b[9] == 0).item())
-        # print('compare C close', torch.allclose(a[9], b[9]))
-        # print('compare Sigma_t', torch.all(a[10] - b[10] == 0).item())
-        # print('compare Sigma_t close', torch.allclose(a[10], b[10]))
-        # print('compare mu_t_gpr', torch.all(a[11] - b[11] == 0).item())
-        # print('compare sigma_t_gpr', torch.all(a[12] - b[12] == 0).item())
-#
-        # print('compare L_0_sqrt', torch.all(a[13] - b[13] == 0).item())
-        # print('compare L_0_sqrt close', torch.allclose(a[13], b[13]))
-        # print('compare Q_0', torch.all(a[14] - b[14] == 0).item())
-        # print('compare Q_0 close', torch.allclose(a[14], b[14]))
-#
-        # print('compare mu_t_aug', torch.all(a[15] - b[15] == 0).item())
-        # print('compare mu_t_aug_prime', torch.all(a[16] - b[16] == 0).item())
-        # print('compare A_t_prime', torch.all(a[17] - b[17] == 0).item())
-        # print('compare A_t_prime close', torch.allclose(a[17], b[17]))
-        # print('compare A_t_inv', torch.all(a[18] - b[18] == 0).item())
-        # print('compare A_t_inv close', torch.allclose(a[18], b[18]))
-        # print('compare ut', torch.all(a[19] - b[19] == 0).item())
-        # print('compare ut close', torch.allclose(a[19], b[19]))
+    # diffs = np.zeros((len(sampler), 3), dtype=bool)
+    # for i, (a, b) in enumerate(zip(loader, gcfm_loader)):
+    for i, (ts, xt, ut, st) in enumerate(gcfm_loader):
+        print('ts shape', ts.shape)
+        print('xt shape', xt.shape)
+        print('ut shape', ut.shape)
+        if st is not None:
+            print('st shape', st.shape)
         break
-    print(diffs)
+    # print(diffs)
     # print(torch.allclose(a[14][0] @ a[14][0].T, torch.eye(11, dtype=torch.float64)))
     # print(torch.allclose(b[14][0] @ b[14][0].T, torch.eye(11, dtype=torch.float64)))
     return
