@@ -1179,6 +1179,8 @@ class TrajAugCFMSamplerForLoop(IterableDataset):
 
 ## TYPING DECLARATIONS
 type RBFK_Bounds = tuple[int | float, int | float] | Literal['fixed']
+type Times = jt.Float64[np.ndarray, 'nt rff_dims*2'] \
+             | jt.Float64[np.ndarray, 'nt 1']
 type Sigma_T = jt.Float64[np.ndarray, 'k nt dims dims'] \
                | jt.Float64[np.ndarray, 'nt'] \
                | float
@@ -1188,11 +1190,18 @@ type Aux = jt.Float64[np.ndarray, 'k dims dims'] \
 type A_T_Prime_A_T_Inv = jt.Float64[np.ndarray, 'k nt dims dims'] \
                          | jt.Float[np.ndarray, 'nt'] \
                          | None
+type GCFMBatch = tuple[
+    jt.Float32[Tensor, 'batch rff_dims*2'] | jt.Float32['batch 1'],
+    jt.Float32[Tensor, 'batch dims'],
+    jt.Float32[Tensor, 'batch dims'],
+    jt.Float32[Tensor, 'batch dims'] | None
+]
 
 
 class GCFMSamplerBase(IterableDataset):
     def __init__(
         self,
+        prng:        np.random.Generator,
         Xs:          jt.Real[np.ndarray, 'N margidx dims'],
         Xrefs:       jt.Real[np.ndarray, 'Nrefs T refdims'],
         obsmask:     list[bool],
@@ -1209,7 +1218,9 @@ class GCFMSamplerBase(IterableDataset):
         sigma:       float=1.0,
         sb_reg:      float=1e-8,
         beta_a:      float=2.0,
-        seed:        int | None=None,
+        rff_seed:    int=2000,
+        rff_scale:   float=1.0,
+        rff_dim:     int=1,
     ) -> None:
         '''Builds sampler for Guided Conditional Flow.
 
@@ -1221,7 +1232,15 @@ class GCFMSamplerBase(IterableDataset):
         Can be an iterable where a full iteration one cycle through the Xrefs
         Currently only implemented for augmentation via a GP regression with an RBF kernel.
 
+        Hyperparams for all mixins are precomputed on class init but
+        are ignored during sampling depending on the chosen mixins.
+        E.g. beta_a is saved but ignored if using the UniformTimeMixin.
+
+        If using the TimeRFFMixin, standardize the random features across runs or validation
+        by keeping the same rff_seed, rff_scale, and rff_dim.
+
         Args:
+            prng:        NumPy Generator for reproducability
             Xs:          All snapshot data
             Xrefs:       All reference trajectories
             obsmask:     Mask to recover only the observed (reference) variables
@@ -1238,8 +1257,13 @@ class GCFMSamplerBase(IterableDataset):
             sigma:       Sigma scaler for isotropic flow conditional prob. path
             sb_reg:      Regularizer to prevent small sigma_t for Schrodinger bridge
             beta_a:      Shape param. if using beta dist as time sampler
-            seed:        NumPy Generator seed for reproducibility
+            rff_seed:    Seed for generating random frequencies
+            rff_scale:   Scale for freq ~ N(0, rff_scale**2)
+            rff_dim:     Number of rff dimensions for each cos and sin transform
         '''
+        ## Reproducability
+        self.prng = prng
+
         ## Data
         self.Xs = Xs
         self.Xrefs = Xrefs
@@ -1268,6 +1292,11 @@ class GCFMSamplerBase(IterableDataset):
 
         ## Time sampler params (Currently Beta only)
         self.beta_a = beta_a
+
+        ## Time RFF enrichment fixed features (ignored if not enhancing time)
+        self.B = self.prng.normal(loc=0, scale=rff_scale, size=(1, rff_dim))
+        ## pre-scale by 2pi to avoid recomputation in _enrich_ts()
+        self.B *= 2 * np.pi
 
         ## Variance schedule (IFMixins only)
         self.sigma = sigma
@@ -1299,9 +1328,6 @@ class GCFMSamplerBase(IterableDataset):
         self._sentinel = self._len - 1  ## needed for some indexing issues
         self._iteridx = 0
         self._Xrefidxs = np.arange(Xrefs.shape[0]).astype(int)
-
-        ## Reproducability
-        self.prng = np.random.default_rng(seed=seed)
 
     def __len__(self) -> int:
         return self._len
@@ -1505,6 +1531,29 @@ class GCFMSamplerBase(IterableDataset):
     @abstractmethod
     def _sample_ts(self) -> jt.Float64[np.ndarray, 'nt']:
         '''Samples batch of times using TimeMixin'''
+        raise NotImplementedError
+
+    ## TimeRFFMixin
+    @overload
+    def _enrich_ts(
+        self,
+        ts: jt.Float64[np.ndarray, 'nt']
+    ) -> jt.Float64[np.ndarray, 'nt rff_dim*2']:
+        ...
+
+    ## TimeNoEnrichMixin
+    @overload
+    def _enrich_ts(
+        self,
+        ts: jt.Float64[np.ndarray, 'nt']
+    ) -> jt.Float64[np.ndarray, 'nt 1']:
+        ...
+
+    @abstractmethod
+    def _enrich_ts(
+        self,
+        ts: jt.Float64[np.ndarray, 'nt']
+    ) -> Times:
         raise NotImplementedError
 
     ## TODO
@@ -1756,7 +1805,7 @@ class GCFMSamplerBase(IterableDataset):
         self.prng.shuffle(self._Xrefidxs)
         return self
 
-    def __next__(self) -> tuple[jt.Float32[Tensor, 'batch 1'], jt.Float32[Tensor, 'batch dims'], jt.Float32[Tensor, 'batch dims'], jt.Float32[Tensor, 'batch dims'] | None]:
+    def __next__(self) -> GCFMBatch:
         if self._iteridx < self._sentinel:
             self._iteridx += 1
             ## Hacky iteration to get idxs[i:i+k]
@@ -1790,16 +1839,15 @@ class GCFMSamplerBase(IterableDataset):
 
             ## Flatten and cast into Tensors of shape (k*b*nt, dims)
             ## Also cast to float32 for compatibility with default torch float operations
-            ## TODO: rename with different suffix instead of _t?
-            ts = np.broadcast_to(ts[None, None, :, None], (*xt.shape[:-1], 1))
-            ts = torch.from_numpy(ts.reshape((-1, 1)).astype(np.float32))
+            ts = self._enrich_ts(ts)
+            ts = np.broadcast_to(ts[None, None, ...], (*xt.shape[:-1], ts.shape[-1]))
+            ts = torch.from_numpy(ts.reshape((-1, ts.shape[-1])).astype(np.float32))
             xt = torch.from_numpy(xt.reshape((-1, xt.shape[-1])).astype(np.float32))
             ut = torch.from_numpy(ut.reshape((-1, ut.shape[-1])).astype(np.float32))
             if st is not None:
                 st = torch.from_numpy(st.reshape((-1, st.shape[-1])).astype(np.float32))
 
             return ts, xt, ut, st
-            # return mu_t, mu_t_gpr, sigma_t_gpr
 
         else:
             raise StopIteration
@@ -1819,7 +1867,31 @@ class BetaTimeMixin:
         return self.prng.beta(self.beta_a, self.beta_a, size=self.nt)
 
 
-## TODO: Add decorator for Random Fourier Features on time mixin?
+class TimeRFFMixin:
+    '''Enriches time with Random Fourier Features
+
+    arxiv.org/pdf/2006.10739
+    '''
+
+    def _enrich_ts(
+        self,
+        ts: jt.Float64[np.ndarray, 'nt']
+    ) -> jt.Float64[np.ndarray, 'nt rff_dim*2']:
+        ## B has shape (1, rff_dim)
+        Bt = self.B * ts[:, None]  ## (nt, rff_dim)
+        cosBt = np.cos(Bt)
+        sinBt = np.sin(Bt)
+        return np.concatenate((cosBt, sinBt), axis=1)
+
+
+class TimeNoEnrichMixin:
+    '''Dummy class with no time enrichment'''
+
+    def _enrich_ts(
+        self,
+        ts: jt.Float64[np.ndarray, 'nt']
+    ) -> jt.Float64[np.ndarray, 'nt 1']:
+        return ts[:, None]
 
 
 class AFMixin:
@@ -2276,6 +2348,7 @@ class NSMixin:
 
 def build_sampler_class(
     time_sampler: Literal['uniform', 'beta'],
+    time_enrich: Literal['null', 'rff'],
     flow_shape: Literal['isotropic', 'anisotropic'],
     flow_bridge: Literal['constant', 'schrodinger'],
     score_shape: Literal['null', 'anisotropic']
@@ -2286,6 +2359,13 @@ def build_sampler_class(
         time_mixin = BetaTimeMixin
     else:
         raise ValueError(f'Unsupported time sampler "{time_sampler}"')
+
+    if time_enrich == 'null':
+        time_enrich_mixin = TimeNoEnrichMixin
+    elif time_enrich == 'rff':
+        time_enrich_mixin = TimeRFFMixin
+    else:
+        raise ValueError(f'Unsupported time enricher "{time_enrich}"')
 
     if flow_shape == 'isotropic':
         if flow_bridge == 'constant':
@@ -2306,7 +2386,7 @@ def build_sampler_class(
     else:
         raise ValueError(f'Unsupported score shape "{score_shape}"')
 
-    bases = (time_mixin, flow_mixin, score_mixin, GCFMSamplerBase)
+    bases = (time_mixin, time_enrich_mixin, flow_mixin, score_mixin, GCFMSamplerBase)
     return type('GCFMSampler', bases, {})
 
 
@@ -2352,6 +2432,8 @@ def main() -> None:
     print('Xs shape', Xs.shape)
     print('Xrefs shape', Xrefs.shape)
 
+    seed = 1000
+    prng = np.random.default_rng(seed=seed)
     k = 2
     n = 16
     b = 4
@@ -2365,7 +2447,9 @@ def main() -> None:
     sigma = 1.0
     sb_reg = 1e-8
     beta_a = 2.0
-    seed = 1000
+    rff_seed = 2000
+    rff_scale = 1.0
+    rff_dim = 3
     # sampler = TrajAugCFMSampler(
         # Xs,
         # Xrefs,
@@ -2407,11 +2491,13 @@ def main() -> None:
     # )
     GCFMSampler = build_sampler_class(
         time_sampler='uniform',
+        time_enrich='rff',
         flow_shape='isotropic',
         flow_bridge='schrodinger',
         score_shape='anisotropic'
     )
     gcfm_sampler = GCFMSampler(
+        prng,
         Xs,
         Xrefs,
         obsmask,
@@ -2428,7 +2514,9 @@ def main() -> None:
         sigma=sigma,
         sb_reg=sb_reg,
         beta_a=beta_a,
-        seed=seed,
+        rff_seed=rff_seed,
+        rff_scale=rff_scale,
+        rff_dim=rff_dim
     )
     print(gcfm_sampler.get_mixin_names())
 
