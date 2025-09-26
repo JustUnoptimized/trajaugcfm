@@ -3,6 +3,7 @@ from functools import reduce
 
 import jaxtyping as jt
 import numpy as np
+import torch
 
 from trajaugcfm.constants import (
     CONSTOBS,
@@ -41,7 +42,7 @@ def batch_interp(
     b: jt.Real[np.ndarray, '#batch *dims'],
     t: jt.Real[np.ndarray, 'times']
 ) -> jt.Real[np.ndarray, 'batch times *dims']:
-    '''Interpolates a batch from a to b'''
+    '''Interpolates a batch from a to b assuming t from 0 to 1'''
     t_broadcast = t[None, :, *(None for _ in range(a.ndim-1))]  ## 1 times ...1
     return (t_broadcast * b[:, None]) + ((1 - t_broadcast) * a[:, None])
 
@@ -95,23 +96,20 @@ def batch_inv_sqrtm(
     return batch_eigh_op(X, fs)
 
 
-def main():
-    obsidxs = [0, 2, 5]
-    obsmask = np.zeros(8, dtype=bool)
-    obsmask[obsidxs] = True
-    hidmask = ~obsmask
+def torch_bmv(
+    A: jt.Float32[torch.Tensor, '*batch m n'],
+    x: jt.Float32[torch.Tensor, '*batch n']
+) -> jt.Float32[torch.Tensor, '*batch m']:
+    '''Batch matrix-vector multiplication using Float32 torch Tensors
 
-    x = np.arange(8) ** 2
-    print(obsidxs)
-    print(x)
-    print(x[obsmask])
-    print(x[hidmask])
-    # redundant = [dynvar for dynvar in DYNOBS if '_IF' in dynvar]
-    # indexer = build_indexer(OBS, dropvars=CONSTOBS+redundant)  # type: ignore
-    # i2 = ~indexer
-    # print(indexer)
-    # print(i2)
+    For some reason PyTorch's torch.mv() cannot handle batches
+    like NumPy's np.matvec() can.
 
+    torch.matmul() and torch.bmm() require simple, but ugly reshaping
+    with unsqueeze() and squeeze(). This utility handles the reshaping.
 
-if __name__ == "__main__":
-    main()
+    Note: This method does NOT handle broadcasting logic. Inputs should
+          have the same batch dimensions!
+    '''
+    return (A @ x.unsqueeze(-1)).squeeze(-1)
+

@@ -18,16 +18,23 @@ from trajaugcfm.constants import (
     DYNOBS,
     IDX2RCMC_SAVENAME
 )
-from trajaugcfm.models import MLP
-from trajaugcfm.sampler import TrajAugCFMSampler
+from trajaugcfm.models import (
+    FlowScoreMLP,
+    MLP,
+    flowscore_wrapper
+)
+from trajaugcfm.sampler import build_sampler_class
 from trajaugcfm.utils import (
     build_indexer,
+)
+from script_utils import (
+    save_losses,
 )
 
 from train import train
 
 
-def int_or_float(x: str) -> int|float:
+def int_or_float(x: str) -> int | float:
     '''Convert to int with fallback to float'''
     try:
         return int(x)
@@ -78,6 +85,72 @@ def parse_args() -> argparse.Namespace:
             +' If int, specifies number of reference samples.'
     )
 
+    timegroup = parser.add_argument_group('timegroup', 'time sampler args')
+    timegroup.add_argument(
+        '--time-sampler', type=str, choices=['uniform', 'beta'], required=True,
+        help='Sample time from Unif(0, 1) or Beta(a, a).'
+    )
+    timegroup.add_argument(
+        '--beta-a', type=float, default=2.0,
+        help='Shape parameter for sampling from Beta(a, a).' \
+            +' Ignored if using uniform time sampler.'
+    )
+    timegroup.add_argument(
+        '--use-time-enrich', action='store_true',
+        help='Set to enable time embeddings'
+    )
+    timegroup.add_argument(
+        '--time-enrich', type=str, choices=['rff'], default='rff',
+        help='Use random fourier features to enrich time.' \
+            +' Ignored if use-time-enrich is not set.'
+    )
+    timegroup.add_argument(
+        '--rff-seed', type=int, default=2000,
+        help='Seed for consistent rff frequencies across train-test splits.' \
+            +' Ignored if not using rff time enrichment.'
+    )
+    timegroup.add_argument(
+        '--rff-scale', type=float, default=1.0,
+        help='Used to sample random frequencies from N(0, rff_scale).' \
+            +' Ignored if not using rff time enrichment.'
+    )
+    timegroup.add_argument(
+        '--rff-dim', type=int, default=1,
+        help='Number of frequency pairs for rff time embedding.' \
+            +' Ignored if not using rff time enrichment.'
+    )
+
+    flowgroup = parser.add_argument_group('flow', 'flow matcher args')
+    flowgroup.add_argument(
+        '--flow', type=str, choices=['isotropic', 'anisotropic'], required=True,
+        help='Select shape of conditional probability path'
+    )
+    flowgroup.add_argument(
+        '--flow-bridge', type=str, choices=['constant', 'schrodinger'], default='constant',
+        help='Select variance schedule for isotropic flow.' \
+            +' Ignored if flow is anisotropic.'
+    )
+    flowgroup.add_argument(
+        '--sigma', type=float, default=1.0,
+        help='Scale for variance schedule. Ignored if using anisotropic flow.'
+    )
+    flowgroup.add_argument(
+        '--sb-reg', type=float, default=1e-8,
+        help='Regularization when computing sigma_t_prime / sigma_t_inv.' \
+            +' Only used for isotropic flow, schrodinger bridge.'
+    )
+
+    scoregroup = parser.add_argument_group('score', 'score matcher args')
+    scoregroup.add_argument(
+        '--score', action='store_true',
+        help='Set to enable score matching.'
+    )
+    scoregroup.add_argument(
+        '--score-shape', type=str, choices=['anisotropic'], default='anisotropic',
+        help='Select shape of conditional probability path for score matching.' \
+            +' Ignored if score is not set.'
+    )
+
     samplergroup = parser.add_argument_group('sampler', 'trajectory augmented sampler args')
     samplergroup.add_argument(
         '--k', type=int, default=8,
@@ -100,10 +173,14 @@ def parse_args() -> argparse.Namespace:
         help='Scale for RBF kernel in Gaussian Process Regressions'
     )
     samplergroup.add_argument(
-        '--gprbounds', type=int_or_float, nargs='+',
+        '--gprbounds', type=int_or_float, nargs='+', default=None,
         help='Scale bounds for RBF kernel in Gaussian Process Regressions.' \
             +' If specified, must only have 2 numbers in ascending order.' \
             +' If unspecified, keep scale fixed and do not optimize.'
+    )
+    samplergroup.add_argument(
+        '--whitenoise', type=float, default=0.1,
+        help='White noise level for White kernel in Gaussian Process Regressions'
     )
     samplergroup.add_argument(
         '--gprnt', type=int, default=8,
@@ -130,8 +207,16 @@ def parse_args() -> argparse.Namespace:
 
     traingroup = parser.add_argument_group('training', 'training args')
     traingroup.add_argument(
+        '--optimizer', type=str, default='AdamW',
+        help='Name of optimizer retrieved equivalently to torch.optim.<optimizer>()'
+    )
+    traingroup.add_argument(
         '--lr', type=float, default=1e-4,
         help='Learning rate'
+    )
+    traingroup.add_argument(
+        '--scheduler', action='store_true',
+        help='Set to use CosineAnnealingLR scheduler.'
     )
     traingroup.add_argument(
         '--lossname', type=str, default='MSELoss',
@@ -142,51 +227,16 @@ def parse_args() -> argparse.Namespace:
         help='Number of training epochs (defined as a pass through all refs)'
     )
     traingroup.add_argument(
-        '--valevery', type=int, default=50,
+        '--val-every', type=int, default=50,
         help='Interval for computing a validation epoch during training'
+    )
+    traingroup.add_argument(
+        '--gradclip-max-norm', type=float, default=None,
+        help='If specified, clip gradient norm.'
     )
     traingroup.add_argument(
         '--progress', action='store_true',
         help='Show training progress bar'
-    )
-    traingroup.add_argument(
-        '--val-mean-reduction', action='store_true',
-        help='Use mean reduction for validation loss (default keeps legacy sum)'
-    )
-
-    timegroup = parser.add_argument_group('time-embed', 'time embedding args')
-    timegroup.add_argument(
-        '--time-embed', action='store_true',
-        help='Enable random Fourier features for time input'
-    )
-    timegroup.add_argument(
-        '--time-embed-dim', type=int, default=16,
-        help='Number of frequency pairs for time embedding (phi has 2*dim features)'
-    )
-    timegroup.add_argument(
-        '--time-embed-scale', type=float, default=1.0,
-        help='Stddev of RFF frequencies b ~ N(0, scale)'
-    )
-
-    scoregroup = parser.add_argument_group('score-head', 'optional score head and loss mixing')
-    scoregroup.add_argument(
-        '--score-head', action='store_true',
-        help='Use dual-head model (flow + score) and add score regression loss'
-    )
-    scoregroup.add_argument(
-        '--score-lambda', type=float, default=0.1,
-        help='Weight for score loss term in total loss'
-    )
-
-    ## Time sampling options (for stability near endpoints)
-    tsgroup = parser.add_argument_group('time-sampling', 'time sampling law for t')
-    tsgroup.add_argument(
-        '--time-sample', type=str, default='uniform',
-        help="Time sampling law: 'uniform' or 'beta' (Beta(a,a))"
-    )
-    tsgroup.add_argument(
-        '--time-beta-a', type=float, default=2.0,
-        help='Alpha parameter a for symmetric Beta(a,a) time sampling when enabled'
     )
 
     miscgroup = parser.add_argument_group('misc', 'misc args')
@@ -199,35 +249,12 @@ def parse_args() -> argparse.Namespace:
         help='Seed for random number generators and reproducability'
     )
 
-    ## FIX(GIF): Guided Isotropic Flow feature flag and options
-    fixgroup = parser.add_argument_group('fixgif', 'guided isotropic flow fix flags')
-    fixgroup.add_argument(
-        '--fixgif', action='store_true',
-        help='Enable Guided Isotropic Flow path: isotropic covariance + bridge means'
-    )
-    fixgroup.add_argument(
-        '--fixgif-sigma', type=str, default='bb',
-        help="Sigma schedule for GIF: 'const' or 'bb' (Brownian-bridge)"
-    )
-    fixgroup.add_argument(
-        '--fixgif-sigma-scale', type=float, default=1.0,
-        help='Base sigma scale for GIF schedule (stddev units after scaling)'
-    )
-    fixgroup.add_argument(
-        '--fixgif-sigma-eps', type=float, default=0.0,
-        help='Additive epsilon inside sigma^2(t)=c^2(eps+t(1-t)) to bound sigma\'/sigma'
-    )
-    fixgroup.add_argument(
-        '--score-gauss', action='store_true',
-        help='When used with --fixgif, sampler builds Gaussian score target (low-rank+diag)'
-    )
-
     ## Diagnostics
-    diaggroup = parser.add_argument_group('diagnostics', 'logging and instrumentation')
-    diaggroup.add_argument(
-        '--log-metrics', action='store_true',
-        help='Log per-step metrics (loss, norms, grad norm, lr) to results/<exp>/metrics.csv'
-    )
+    # diaggroup = parser.add_argument_group('diagnostics', 'logging and instrumentation')
+    # diaggroup.add_argument(
+        # '--log-metrics', action='store_true',
+        # help='Log per-step metrics (loss, norms, grad norm, lr) to results/<exp>/metrics.csv'
+    # )
 
     return parser.parse_args()
 
@@ -235,7 +262,7 @@ def parse_args() -> argparse.Namespace:
 def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     '''Checks and formats command line arguments
 
-    May modify internal state of args.
+    Modifies the internal state of certain args.
     Returns args.
     '''
     ## expgroup check
@@ -258,6 +285,16 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     assert args.trainsize > 0, f'Trainsize must be positive but got {args.trainsize}'
     assert args.refsize > 0, f'Refsize must be positive but got {args.refsize}'
 
+    ## timegroup check
+    assert args.beta_a > 1, f'beta-a must be > 1 but got {args.beta_a}'
+    assert args.rff_seed >= 0, f'rff-seed must be non-negative but got {args.rff_seed}'
+    assert args.rff_scale >= 0, f'rff-seed must be non-negative but got {args.rff_scale}'
+    assert args.rff_dim > 0, f'rff-dim must be positive but got {args.rff_dim}'
+
+    ## flowgroup check
+    assert args.sigma >= 0, f'sigma must be non-negative but got {args.sigma}'
+    assert args.sb_reg > 0, f'sb_reg must be positive but got {args.sb_reg}'
+
     ## samplergroup check
     assert args.k > 0, f'k must be positive but got {args.k}'
     assert args.n > 0, f'n must be positive but got {args.n}'
@@ -273,6 +310,7 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
         args.gprbounds = gprbounds
     else:
         args.gprbounds = 'fixed'
+    assert args.whitenoise >= 0, f'whitenoise must be non-negative but got {args.whitenoise}'
     assert args.gprnt > 0, f'gprnt must be positive but got {args.gprnt}'
     assert args.rbfdistscale > 0, \
         f'rbfdistscale must be positive but got {args.rbfdistscale}'
@@ -285,31 +323,13 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     ## traingroup check
     assert args.lr > 0, f'lr must be positive but got {args.lr}'
     assert args.epochs > 0, f'epochs must be positive but got {args.epochs}'
-    assert args.valevery > 0, f'valevery must be positive but got {args.valevery}'
+    assert args.val_every > 0, f'valevery must be positive but got {args.valevery}'
+    if args.gradclip_max_norm is not None:
+        assert args.gradclip_max_norm > 0, \
+            f'gradclip-max-norm must be positive but got {args.gradclip_max_norm}'
 
     if args.seed is not None:
         assert args.seed >= 0, f'seed must be non-negative but got {args.seed}'
-
-    ## FIX(GIF): basic validation of sigma schedule
-    if hasattr(args, 'fixgif') and args.fixgif:
-        assert args.fixgif_sigma in ['const', 'bb'], \
-            f"Unsupported --fixgif-sigma '{args.fixgif_sigma}', use 'const' or 'bb'"
-        assert args.fixgif_sigma_scale > 0, \
-            f'--fixgif-sigma-scale must be positive but got {args.fixgif_sigma_scale}'
-
-    ## Time embedding validation
-    if args.time_embed:
-        assert args.time_embed_dim > 0, \
-            f'--time-embed-dim must be positive when --time-embed is set'
-        assert args.time_embed_scale > 0, \
-            f'--time-embed-scale must be positive'
-
-    ## Time sampling validation
-    assert args.time_sample in ['uniform', 'beta'], \
-        f"Unsupported --time-sample '{args.time_sample}', use 'uniform' or 'beta'"
-    if args.time_sample == 'beta':
-        assert args.time_beta_a > 1.0, \
-            f'--time-beta-a should be > 1 to avoid edges; got {args.time_beta_a}'
 
     return args
 
@@ -378,9 +398,7 @@ def main() -> None:
     hid_scaler.fit(data_train_snapshots[:, :, hidmask].reshape((-1, dhid)))
 
     data_train_snapshots_scaled = np.zeros_like(data_train_snapshots)
-    # data_train_refs_scaled = np.zeros_like(data_train_refs)
     data_val_snapshots_scaled = np.zeros_like(data_val_snapshots)
-    # data_val_refs_scaled = np.zeros_like(data_val_refs)
 
     data_train_snapshots_scaled[:, :, obsmask] = obs_scaler.transform(
         data_train_snapshots[:, :, obsmask].reshape((-1, dobs))
@@ -403,7 +421,19 @@ def main() -> None:
     ).reshape(data_val_refs.shape)
 
     print('\nConstructing Sampler...')
-    train_sampler = TrajAugCFMSampler(
+    GCFMSampler = build_sampler_class(
+        args.time_sampler,
+        args.use_time_enrich,
+        args.time_enrich,
+        args.flow,
+        args.flow_bridge,
+        args.score,
+        args.score_shape
+    )
+    print('\nMixins:')
+    print(' '.join(GCFMSampler.get_mixin_names())+'\n')
+    train_sampler = GCFMSampler(
+        np.random.default_rng(seed=args.seed),
         data_train_snapshots_scaled,
         data_train_refs_scaled,
         obsmask,
@@ -414,19 +444,19 @@ def main() -> None:
         args.nt,
         rbfk_scale=args.gprscale,
         rbfk_bounds=args.gprbounds,
+        whitenoise=args.whitenoise,
         gpr_nt=args.gprnt,
         rbfd_scale=args.rbfdistscale,
         reg=args.reg,
-        seed=args.seed,
-        fixgif=args.fixgif,
-        fixgif_sigma=args.fixgif_sigma,
-        fixgif_sigma_scale=args.fixgif_sigma_scale,
-        fixgif_sigma_eps=args.fixgif_sigma_eps,
-        time_sample=args.time_sample,
-        time_beta_a=args.time_beta_a,
-        score_gauss=args.score_gauss,
+        sigma=args.sigma,
+        sb_reg=args.sb_reg,
+        beta_a=args.beta_a,
+        rff_seed=args.rff_seed,
+        rff_scale=args.rff_scale,
+        rff_dim=args.rff_dim,
     )
-    val_sampler = TrajAugCFMSampler(
+    val_sampler = GCFMSampler(
+        np.random.default_rng(seed=args.seed if args.seed is None else args.seed+1),
         data_val_snapshots_scaled,
         data_val_refs_scaled,
         obsmask,
@@ -437,88 +467,93 @@ def main() -> None:
         args.nt,
         rbfk_scale=args.gprscale,
         rbfk_bounds=args.gprbounds,
+        whitenoise=args.whitenoise,
         gpr_nt=args.gprnt,
         rbfd_scale=args.rbfdistscale,
         reg=args.reg,
-        seed=args.seed if args.seed is None else args.seed+1,
-        fixgif=args.fixgif,
-        fixgif_sigma=args.fixgif_sigma,
-        fixgif_sigma_scale=args.fixgif_sigma_scale,
-        fixgif_sigma_eps=args.fixgif_sigma_eps,
-        time_sample=args.time_sample,
-        time_beta_a=args.time_beta_a,
-        score_gauss=args.score_gauss,
+        sigma=args.sigma,
+        sb_reg=args.sb_reg,
+        beta_a=args.beta_a,
+        rff_seed=args.rff_seed,
+        rff_scale=args.rff_scale,
+        rff_dim=args.rff_dim,
     )
-    trainloader = DataLoader(train_sampler, batch_size=None)
-    valloader = DataLoader(val_sampler, batch_size=None)
+    train_loader = DataLoader(train_sampler, batch_size=None)
+    val_loader = DataLoader(val_sampler, batch_size=None)
 
     print('\nConstructing Model...')
-    d_in = data_train_snapshots.shape[-1]
-    d_out = d_in
+    d_vars = data_train_snapshots.shape[-1]
+    d_out = d_vars
     w = args.width
     h = args.depth
-    time_feat_dim = (2 * args.time_embed_dim) if args.time_embed else 1
-    if args.score_head:
-        from trajaugcfm.models import FlowScoreMLP
-        model = FlowScoreMLP(d_in + time_feat_dim, d_out, w=w, h=h)
+    if args.use_time_enrich:
+        if args.time_enrich == 'rff':
+            d_time = args.rff_dim * 2
     else:
-        model = MLP(d_in + time_feat_dim, d_out, w=w, h=h)
+        d_time = 1
+    d_in = d_vars + d_time
+    if args.score:
+        model = FlowScoreMLP(d_in, d_out, w=w, h=h)
+    else:
+        model = MLP(d_in, d_out, w=w, h=h)
+        model = flowscore_wrapper(model)
     print(model)
 
     device = 'cuda' if (not args.nogpu) and torch.cuda.is_available() else 'cpu'
     print('device:', device)
     model = model.to(device)
-    lr = args.lr
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
-    lossname = args.lossname
-    epochs = args.epochs
-    val_every = args.valevery
-    progress = args.progress
+    opt = getattr(torch.optim, args.optimizer)(model.parameters(), lr=args.lr)
+    print('optimizer:', opt)
+    if args.scheduler:
+        lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
+    else:
+        lr_sched = None
+    print('lr scheduler:', lr_sched)
+    lossfn = getattr(torch.nn, args.lossname)()
 
     print('\nTraining model...')
-    metrics_log_path = os.path.join(args.expname, 'metrics.csv') if args.log_metrics else None
-
-    train_losses, val_losses = train(
+    train_flow_losses, train_score_losses, val_flow_losses, val_score_losses = train(
         model,
         opt,
-        trainloader,
-        valloader,
-        lossname,
-        epochs,
-        val_every,
-        progress,
-        device,
-        gradclip_max_norm=1.0,
-        lr_scheduler='cosine',
-        eta_min=1e-5,
-        val_mean_reduction=args.val_mean_reduction,
-        time_embed=args.time_embed,
-        time_embed_dim=args.time_embed_dim,
-        time_embed_scale=args.time_embed_scale,
-        time_embed_seed=args.seed,
-        metrics_log_path=metrics_log_path,
-        score_head=args.score_head,
-        score_lambda=args.score_lambda,
+        lr_sched,
+        train_loader,
+        val_loader,
+        lossfn,
+        args.epochs,
+        args.val_every,
+        args.gradclip_max_norm,
+        args.score,
+        args.progress,
+        device
     )
 
     print('\nSaving results and plotting losses...')
     torch.save(model.state_dict(), os.path.join(args.expname, 'model.pt'))
-    np.savez(
+    save_losses(
         os.path.join(args.expname, 'losses.npz'),
-        train=train_losses,
-        val=val_losses
+        args.score,
+        train_flow_losses,
+        train_score_losses,
+        val_flow_losses,
+        val_score_losses
     )
-    fig, ax = plt.subplots(figsize=(8, 4))
-    train_step_space = np.arange(epochs)
-    val_step_space = np.arange(val_losses.shape[0]) * val_every
-    val_step_space[-1] = epochs
-    ax.grid(visible=True, alpha=0.3)
-    ax.plot(train_step_space, train_losses.mean(axis=1), label='train loss')
-    # ax.plot(val_step_space, val_losses, label='val loss')
-    ax.legend(loc='upper right')
+    fig, axs = plt.subplots(nrows=2, figsize=(8, 8), sharex=True)
+    train_step_space = np.arange(args.epochs) + 1
+    val_step_space = np.arange(val_flow_losses.shape[0]) * args.val_every
+    val_step_space[-1] = args.epochs
+    axs[0].grid(visible=True)
+    axs[0].plot(train_step_space, train_flow_losses.mean(axis=1), label='train flow loss')
+    axs[0].plot(val_step_space, val_flow_losses, label='val flow loss')
+    axs[0].legend(loc='upper right')
+    if args.score:
+        axs[1].set_ylim(top=5)
+        axs[1].grid(visible=True)
+        axs[1].plot(train_step_space, train_score_losses.mean(axis=1), label='train score loss')
+        axs[1].plot(val_step_space, val_score_losses, label='val score loss')
+        axs[1].legend(loc='upper right')
     fig.tight_layout()
-    fig.savefig(os.path.join(args.expname, 'loss.png'))
     fig.savefig(os.path.join(args.expname, 'loss.pdf'))
+    fig.savefig(os.path.join(args.expname, 'loss.png'))
 
 
 if __name__ == '__main__':

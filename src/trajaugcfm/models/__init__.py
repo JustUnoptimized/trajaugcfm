@@ -1,1 +1,5 @@
-from .models import MLP, FlowScoreMLP
+from .models import (
+    MLP,
+    FlowScoreMLP,
+    flowscore_wrapper
+)

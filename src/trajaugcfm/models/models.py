@@ -14,10 +14,6 @@ class MLP(nn.Module):
         h:     int=2
     ) -> None:
         super().__init__()
-        # self.d_in = d_in
-        # self.d_out = d_out
-        # self.w = w
-        # self.h = h
         act = nn.SELU()  ## will get registered inside nn.Sequential()
         linears = (nn.Linear(w, w) for _ in range(h))
         self.net = nn.Sequential(
@@ -44,42 +40,33 @@ class FlowScoreMLP(nn.Module):
     ) -> None:
         super().__init__()
         act = nn.SELU()
-        layers = [nn.Linear(d_in, w), act]
-        for _ in range(h):
-            layers.append(nn.Linear(w, w))
-            layers.append(act)
-        self.trunk = nn.Sequential(*layers)
-        self.head_flow = nn.Linear(w, d_out)
-        self.head_score = nn.Linear(w, d_out)
+        linears = (nn.Linear(w, w) for _ in range(h))
+        self.trunk = nn.Sequential(
+            nn.Linear(d_in, w),
+            act,
+            *itertools.chain.from_iterable(zip(linears, itertools.repeat(act)))
+        )
+        self.flow_head = nn.Linear(w, d_out)
+        self.score_head = nn.Linear(w, d_out)
 
     def forward(
         self,
         x: jt.Real[torch.Tensor, '*batch d_in']
     ) -> tuple[jt.Real[torch.Tensor, '*batch d_out'], jt.Real[torch.Tensor, '*batch d_out']]:
-        h = self.trunk(x)
-        return self.head_flow(h), self.head_score(h)
+        z = self.trunk(x)
+        return self.flow_head(z), self.score_head(z)
 
 
-def main() -> None:
-    d_in = 3
-    d_out = 5
-    w = 4
-    d = 2
-    print(d_in, d_out, w, d)
-    f = MLP(d_in+1, d_out, w, d)
-    print(f)
+class flowscore_wrapper(nn.Module):
+    '''Wrapper to convert single-head model to double-head model'''
 
-    b = 8
-    x = torch.rand(b, d_in)
-    t = torch.rand(b, 1)
-    xt = torch.concat((t, x), dim=-1)
-    y = torch.rand(b, d_out)
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
 
-    print(x.shape, t.shape, xt.shape, y.shape)
+    def forward(
+        self,
+        x: jt.Real[torch.Tensor, '*batch d_in']
+    ) -> tuple[jt.Real[torch.Tensor, '*batch d_out'], None]:
+        return self.model(x), None
 
-    yhat = f(xt)
-    print(yhat.shape)
-
-
-if __name__ == '__main__':
-    main()
