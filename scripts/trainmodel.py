@@ -28,7 +28,7 @@ from trajaugcfm.utils import (
     build_indexer,
 )
 from script_utils import (
-    save_losses,
+    save_train_metrics
 )
 
 from train import train
@@ -217,10 +217,6 @@ def parse_args() -> argparse.Namespace:
     traingroup.add_argument(
         '--scheduler', action='store_true',
         help='Set to use CosineAnnealingLR scheduler.'
-    )
-    traingroup.add_argument(
-        '--lossname', type=str, default='MSELoss',
-        help='Name of loss fn retrieved equivalently to torch.nn.<lossname>()'
     )
     traingroup.add_argument(
         '--epochs', type=int, default=1000,
@@ -509,10 +505,10 @@ def main() -> None:
     else:
         lr_sched = None
     print('lr scheduler:', lr_sched)
-    lossfn = getattr(torch.nn, args.lossname)()
+    lossfn = torch.nn.MSELoss()
 
     print('\nTraining model...')
-    train_flow_losses, train_score_losses, val_flow_losses, val_score_losses = train(
+    train_flow_losses, train_score_losses, val_flow_losses, val_score_losses, lrs = train(
         model,
         opt,
         lr_sched,
@@ -527,18 +523,21 @@ def main() -> None:
         device
     )
 
-    print('\nSaving results and plotting losses...')
+    print('\nSaving results...')
     torch.save(model.state_dict(), os.path.join(args.expname, 'model.pt'))
-    save_losses(
+    save_train_metrics(
         os.path.join(args.expname, 'losses.npz'),
         args.score,
         train_flow_losses,
         train_score_losses,
         val_flow_losses,
-        val_score_losses
+        val_score_losses,
+        lrs
     )
+
+    print('\nPlotting losses...')
     fig, axs = plt.subplots(nrows=2, figsize=(8, 8), sharex=True)
-    train_step_space = np.arange(args.epochs) + 1
+    train_step_space = np.arange(args.epochs)
     val_step_space = np.arange(val_flow_losses.shape[0]) * args.val_every
     val_step_space[-1] = args.epochs
     axs[0].grid(visible=True)
@@ -554,6 +553,14 @@ def main() -> None:
     fig.tight_layout()
     fig.savefig(os.path.join(args.expname, 'loss.pdf'))
     fig.savefig(os.path.join(args.expname, 'loss.png'))
+
+    print('\nPlotting lrs...')
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.grid(visible=True)
+    ax.plot(train_step_space, lrs)
+    fig.tight_layout()
+    fig.savefig(os.path.join(args.expname, 'lrs.pdf'))
+    fig.savefig(os.path.join(args.expname, 'lrs.png'))
 
 
 if __name__ == '__main__':

@@ -8,7 +8,13 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from trajaugcfm.utils import torch_bmv
-
+type Result = tuple[
+    jt.Real[np.ndarray, 'epochs nsteps'],         ## train flow losses
+    jt.Real[np.ndarray, 'epochs nsteps'] | None,  ## train score losses
+    jt.Real[np.ndarray, 'nvals'],                 ## val flow losses
+    jt.Real[np.ndarray, 'nvals'] | None,          ## val score losses
+    jt.Real[np.ndarray, 'epochs']                 ## lrs
+]
 
 def train_step(
     model: nn.Module,
@@ -155,7 +161,7 @@ def train(
     score: bool,
     progress: bool,
     device: Literal['cuda', 'cpu']
-) -> tuple[jt.Real[np.ndarray, 'epochs nsteps'], jt.Real[np.ndarray, 'epochs nsteps'] | None, jt.Real[np.ndarray, 'nvals'], jt.Real[np.ndarray, 'nvals'] | None]:
+) -> Result:
     if val_every > 0:
         nvals, r = divmod(epochs, val_every)
         nvals += 1 if r > 0 else 0  ## val_every does not evenly divide epochs
@@ -167,6 +173,9 @@ def train(
     train_score_losses = np.zeros((epochs, len(train_loader))) if score else None
     val_flow_losses = np.zeros(nvals)
     val_score_losses = np.zeros(nvals) if score else None
+    ## TODO: if later modify opt to have multiple param groups
+    ##       update this array accordingly
+    lrs = np.full(epochs, opt.param_groups[0]['lr'])
 
     if progress:
         pbar = tqdm.tqdm(total=epochs, desc='Training Epochs')
@@ -204,6 +213,9 @@ def train(
             train_score_losses[i] = epoch_score_losses
 
         if lr_sched is not None:
+            ## TODO: if later modify opt to have multiple param groups
+            ##       update this array accordingly
+            lrs[i] = lr_sched.get_last_lr()[0]
             lr_sched.step()
 
         if progress:
@@ -225,7 +237,7 @@ def train(
     if score:
         val_score_losses[-1] = score_loss
 
-    return train_flow_losses, train_score_losses, val_flow_losses, val_score_losses
+    return train_flow_losses, train_score_losses, val_flow_losses, val_score_losses, lrs
 
 
 def main() -> None:
