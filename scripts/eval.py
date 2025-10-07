@@ -182,7 +182,7 @@ def compute_distribution_metrics(
     assert np.all(~np.isinf(sinkhorns))
 
     dist_metrics['EMD'] = emds
-    dist_metrics[f'Sinkhorn (reg = {reg})'] = sinkhorns
+    dist_metrics['Entropic EMD'] = sinkhorns
     return dist_metrics
 
 
@@ -231,7 +231,6 @@ def main() -> None:
         data_val, test_size=exp_args.refsize,
         random_state=exp_args.seed if exp_args.seed is None else exp_args.seed+4
     )
-    # data_val_snapshots = data_val_snapshots[:, tidxs]
     data_val_refs_hid = data_val_refs[:, :, hidmask]
     data_val_refs = data_val_refs[:, :, obsmask]
     print('data val snapshots shape', data_val_snapshots.shape)
@@ -346,6 +345,8 @@ def main() -> None:
 
     for i, (name, metric) in enumerate(dist_metrics.items()):
         ax = axs[*divmod(i, args.ncols)]
+        if name == 'Entropic EMD':
+            name += f' (reg = {args.reg})'
         ax.set_title(name)
 
         ax.grid(visible=True, alpha=0.4)
