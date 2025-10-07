@@ -28,23 +28,15 @@ from trajaugcfm.utils import (
     build_indexer,
 )
 from script_utils import (
-    save_train_metrics
+    MODEL_FILENAME,
+    TRAINARGS_FILENAME,
+    int_or_float,
+    save_scalers,
+    save_train_metrics,
+    scale_data
 )
 
 from train import train
-
-
-def int_or_float(x: str) -> int | float:
-    '''Convert to int with fallback to float'''
-    try:
-        return int(x)
-    except:
-        try:
-            return float(x)
-        except ValueError:
-            raise argparse.ArgumentTypeError(
-                f'Could not convert {x} to a int or float'
-            )
 
 
 def parse_args() -> argparse.Namespace:
@@ -333,7 +325,7 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
 def set_up_exp(args: argparse.Namespace) -> None:
     '''Create expdir if not exist and dump json argfile'''
     os.makedirs(args.expname, exist_ok=args.existok)
-    with open(os.path.join(args.expname, 'args.json'), 'w') as f:
+    with open(os.path.join(args.expname, TRAINARGS_FILENAME), 'w') as f:
         json.dump(vars(args), f, indent=4)
 
 
@@ -386,35 +378,24 @@ def main() -> None:
     print('data val refs shape', data_val_refs.shape)
 
     print('\nScaling data using train split...')
-    obs_scaler = StandardScaler()
-    hid_scaler = StandardScaler()
+    (
+        data_train_snapshots_scaled,
+        data_train_refs_scaled, 
+        data_val_snapshots_scaled,
+        data_val_refs_scaled,
+        obs_scaler,
+        hid_scaler
+    ) = scale_data(
+        data_train_snapshots,
+        data_train_refs,
+        data_val_snapshots,
+        data_val_refs,
+        obsmask,
+        hidmask
+    )
 
-    obs_scaler.partial_fit(data_train_snapshots[:, :, obsmask].reshape((-1, dobs)))
-    obs_scaler.partial_fit(data_train_refs.reshape((-1, dobs)))
-    hid_scaler.fit(data_train_snapshots[:, :, hidmask].reshape((-1, dhid)))
-
-    data_train_snapshots_scaled = np.zeros_like(data_train_snapshots)
-    data_val_snapshots_scaled = np.zeros_like(data_val_snapshots)
-
-    data_train_snapshots_scaled[:, :, obsmask] = obs_scaler.transform(
-        data_train_snapshots[:, :, obsmask].reshape((-1, dobs))
-    ).reshape(data_train_snapshots[:, :, obsmask].shape)
-    data_train_snapshots_scaled[:, :, hidmask] = hid_scaler.transform(
-        data_train_snapshots[:, :, hidmask].reshape((-1, dhid))
-    ).reshape(data_train_snapshots[:, :, hidmask].shape)
-    data_train_refs_scaled = obs_scaler.transform(
-        data_train_refs.reshape((-1, dobs))
-    ).reshape(data_train_refs.shape)
-
-    data_val_snapshots_scaled[:, :, obsmask] = obs_scaler.transform(
-        data_val_snapshots[:, :, obsmask].reshape((-1, dobs))
-    ).reshape(data_val_snapshots[:, :, obsmask].shape)
-    data_val_snapshots_scaled[:, :, hidmask] = hid_scaler.transform(
-        data_val_snapshots[:, :, hidmask].reshape((-1, dhid))
-    ).reshape(data_val_snapshots[:, :, hidmask].shape)
-    data_val_refs_scaled = obs_scaler.transform(
-        data_val_refs.reshape((-1, dobs))
-    ).reshape(data_val_refs.shape)
+    print('\nSaving scalers...')
+    save_scalers(args.expname, obs_scaler, hid_scaler)
 
     print('\nConstructing Sampler...')
     GCFMSampler = build_sampler_class(
@@ -428,6 +409,7 @@ def main() -> None:
     )
     print('\nMixins:')
     print(' '.join(GCFMSampler.get_mixin_names())+'\n')
+
     train_sampler = GCFMSampler(
         np.random.default_rng(seed=args.seed),
         data_train_snapshots_scaled,
@@ -524,7 +506,7 @@ def main() -> None:
     )
 
     print('\nSaving results...')
-    torch.save(model.state_dict(), os.path.join(args.expname, 'model.pt'))
+    torch.save(model.state_dict(), os.path.join(args.expname, MODEL_FILENAME))
     save_train_metrics(
         os.path.join(args.expname, 'losses.npz'),
         args.score,
