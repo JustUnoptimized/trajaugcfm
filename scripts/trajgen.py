@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from typing import Any, Literal
 
 import jaxtyping as jt
-import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.model_selection import train_test_split
 import tqdm
@@ -277,9 +276,6 @@ def main() -> None:
         obs_scaler,
         hid_scaler,
     )
-    data_val_refs_hid_scaled = hid_scaler.transform(
-        data_val_refs_hid.reshape((-1, dhid))
-    ).reshape(data_val_refs_hid.shape)
 
     print(f'\nLoading model from {os.path.join(args.expname, MODEL_FILENAME)}...')
     d_vars = data_train_snapshots.shape[-1]
@@ -358,53 +354,6 @@ def main() -> None:
     ## save metrics file (and overwrite if exists)
     with open(metrics_file, 'w') as f:
         json.dump(metrics_dict, f, indent=4)
-
-    ## Plot trajs
-    ncols = args.ncols
-    nrows, r = divmod(d, ncols)
-    if r > 0:
-        nrows += 1
-
-    ax_h = args.ax_h
-    ax_w = args.ax_w
-
-    varnames = [varname for i, varname in enumerate(DYNOBS) if dynifmask[i]]
-    fig, axs = plt.subplots(
-        nrows=nrows, ncols=ncols, figsize=(ax_w*ncols, ax_h*nrows),
-        squeeze=False, sharex=True
-    )
-    fig.suptitle('True v Inferred Trajectories')
-    tspan = np.linspace(0, 1, data_val_refs_scaled.shape[1])
-    jo = 0
-    jh = 0
-    for i in range(d):
-        r, c, = divmod(i, ncols)
-        ax = axs[r, c]
-
-        if obsmask[i]:
-            val_trajs_di = data_val_refs_scaled[:args.nrefplot, :, jo]
-            jo += 1
-        else:
-            val_trajs_di = data_val_refs_hid_scaled[:args.nrefplot, :, jh]
-            jh += 1
-
-        ax.set_title(varnames[i])
-        if i == 0:
-            ax.plot(tspan, val_trajs_di[0], c='c', alpha=0.25,
-                    label='True')
-            ax.plot(ts, trajs[0, :, i], c='tab:orange', alpha=0.5,
-                    label='Inferred')
-            ax.legend(loc='upper right')
-        ax.plot(tspan, val_trajs_di[1:].T, c='c', alpha=0.2)
-        ax.plot(ts, trajs[1:args.ntrajplot, :, i].T, c='tab:orange', alpha=0.5)
-
-    for i in range(d, nrows*ncols):
-        ax = axs[*divmod(i, ncols)]
-        ax.axis('off')
-
-    fig.tight_layout()
-    fig.savefig(os.path.join(args.expname, 'trajplot.pdf'))
-    fig.savefig(os.path.join(args.expname, 'trajplot.png'))
 
 
 if __name__ == '__main__':

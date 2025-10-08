@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from typing import Any, Literal
 
 import jaxtyping as jt
-import matplotlib.pyplot as plt
 import numpy as np
 import ot
 from scipy.spatial.distance import cdist
@@ -291,108 +290,6 @@ def main() -> None:
         abserr=abserr,
         **dist_metrics
     )
-
-    ## Plotting
-    nplotidxs = trajs.shape[0] if args.nplot == -1 else args.nplot
-    plotidxs = prng.choice(trajs.shape[0], size=nplotidxs, replace=False)
-
-    nrows, r = divmod(len(pw_metrics.keys()), args.ncols)
-    if r > 0:
-        nrows += 1
-
-    fig, axs = plt.subplots(
-        nrows=nrows, ncols=args.ncols,
-        figsize=(args.ncols*args.ax_w, nrows*args.ax_h),
-        sharex=True, squeeze=False
-    )
-    fig.suptitle('Pointwise Metrics Over All Features')
-
-    for i, (name, metric) in enumerate(pw_metrics.items()):
-        ax = axs[*divmod(i, args.ncols)]
-        ax.set_title(name)
-
-        ax.grid(visible=True, alpha=0.4)
-        ax.plot(metric[:args.nplot].T, c='c', alpha=0.3)
-        metric_mean = metric.mean(axis=0)
-        metric_std = metric.std(axis=0)
-        ax.plot(metric_mean, c='b')
-        ax.fill_between(
-            np.arange(metric.shape[1]),
-            metric_mean + metric_std,
-            metric_mean - metric_std,
-            color='b',
-            alpha=0.15
-        )
-
-    fig.tight_layout()
-    fignamebase = os.path.join(args.expname, 'pw_metric_plots')
-    fig.savefig(f'{fignamebase}.pdf')
-    fig.savefig(f'{fignamebase}.png')
-
-    nrows, r = divmod(len(dist_metrics.keys()), args.ncols)
-    if r > 0:
-        nrows += 1
-
-    fig, axs = plt.subplots(
-        nrows=nrows, ncols=args.ncols,
-        figsize=(args.ncols*args.ax_w, nrows*args.ax_h),
-        sharex=True, squeeze=False
-    )
-    fig.suptitle('Distributional Distance Metrics\nUsing Squared Euclidean Distance')
-
-    for i, (name, metric) in enumerate(dist_metrics.items()):
-        ax = axs[*divmod(i, args.ncols)]
-        if name == 'Entropic EMD':
-            name += f' (reg = {args.reg})'
-        ax.set_title(name)
-
-        ax.grid(visible=True, alpha=0.4)
-        ax.plot(metric)
-
-    fig.tight_layout()
-    fignamebase = os.path.join(args.expname, 'dist_metric_plots')
-    fig.savefig(f'{fignamebase}.pdf')
-    fig.savefig(f'{fignamebase}.png')
-
-    ## Plot absolute error for each individual variable
-    nrows, r = divmod(abserr.shape[2], args.ncols_indiv)
-    if r > 0:
-        nrows += 1
-
-    fig, axs = plt.subplots(
-        nrows=nrows, ncols=args.ncols_indiv,
-        figsize=(args.ncols_indiv*args.ax_w_indiv, nrows*args.ax_h_indiv),
-        sharex=True, squeeze=False
-    )
-    fig.suptitle('Absolute Error per Variable')
-
-    varnames = [varname for i, varname in enumerate(DYNOBS) if dynifmask[i]]
-    for i in range(nrows*args.ncols_indiv):
-        ax = axs[*divmod(i, args.ncols_indiv)]
-        if i >= abserr.shape[2]:
-            ax.axis('off')
-            continue
-
-        ax.set_title(varnames[i])
-
-        ax.grid(visible=True, alpha=0.4)
-        abserr_i = abserr[:args.nplot, :, i]
-        ax.plot(abserr_i.T, c='c', alpha=0.3)
-        mae = abserr_i.mean(axis=0)
-        aestd = abserr_i.std(axis=0)
-        ax.plot(mae, c='b')
-        ax.fill_between(
-            np.arange(abserr_i.shape[1]),
-            mae - aestd,
-            mae + aestd,
-            color='b',
-            alpha=0.15
-        )
-
-    fig.tight_layout()
-    fignamebase = os.path.join(args.expname, 'metric_plots_indiv')
-    fig.savefig(f'{fignamebase}.pdf')
-    fig.savefig(f'{fignamebase}.png')
 
 
 if __name__ == '__main__':

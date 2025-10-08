@@ -3,7 +3,6 @@ import json
 import os
 import pickle
 
-import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -543,33 +542,6 @@ def main() -> None:
         val_score_losses,
         lrs
     )
-
-    print('\nPlotting losses...')
-    fig, axs = plt.subplots(nrows=2, figsize=(8, 8), sharex=True)
-    train_step_space = np.arange(args.epochs)
-    val_step_space = np.arange(val_flow_losses.shape[0]) * args.val_every
-    val_step_space[-1] = args.epochs
-    axs[0].grid(visible=True)
-    axs[0].plot(train_step_space, train_flow_losses.mean(axis=1), label='train flow loss')
-    axs[0].plot(val_step_space, val_flow_losses, label='val flow loss')
-    axs[0].legend(loc='upper right')
-    if args.score:
-        axs[1].set_ylim(top=5)
-        axs[1].grid(visible=True)
-        axs[1].plot(train_step_space, train_score_losses.mean(axis=1), label='train score loss')
-        axs[1].plot(val_step_space, val_score_losses, label='val score loss')
-        axs[1].legend(loc='upper right')
-    fig.tight_layout()
-    fig.savefig(os.path.join(args.expname, 'loss.pdf'))
-    fig.savefig(os.path.join(args.expname, 'loss.png'))
-
-    print('\nPlotting lrs...')
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.grid(visible=True)
-    ax.plot(train_step_space, lrs)
-    fig.tight_layout()
-    fig.savefig(os.path.join(args.expname, 'lrs.pdf'))
-    fig.savefig(os.path.join(args.expname, 'lrs.png'))
 
 
 if __name__ == '__main__':

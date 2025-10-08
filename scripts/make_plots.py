@@ -114,7 +114,7 @@ def plot_extensions(
     dirname: str,
     figname: str,
     exts: Sequence[str],
-):
+) -> None:
     '''Saves a figure with all supplied extensions'''
     name = os.path.join(dirname, figname)
     for ext in exts:
@@ -380,7 +380,7 @@ def plot_evals(
     plot_extensions(fig, expname, 'metric_plots_indiv', extensions)
 
 
-def main():
+def main() -> None:
     args = parse_args()
     args = chk_fmt_args(args)
     exp_args = load_args(args.expname, TRAINARGS_FILENAME)
@@ -502,8 +502,8 @@ def main():
     ## Traj Eval Plots
     print('Loading evaluation metrics...')
     eval_metrics = np.load(os.path.join(args.expname, EVALS_FILENAME))
-    print('Plotting evaluation metrics...')
 
+    print('Plotting evaluation metrics...')
     plot_evals(
         eval_metrics,
         args.nevals,
