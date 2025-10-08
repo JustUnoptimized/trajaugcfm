@@ -25,6 +25,7 @@ HID_SCALER_FILENAME = 'hid_scaler.z'
 MODEL_FILENAME = 'model.pt'
 METRICS_FILENAME = 'metrics.json'
 TRAINARGS_FILENAME = 'args.json'
+LOSSES_FILENAME = 'losses.npz'
 TRAJGENARGS_FILENAME = 'trajgen_args.json'
 TRAJGEN_FILENAME = 'trajs_scaled.npy'
 EVALARGS_FILENAME = 'eval_args.json'
@@ -51,31 +52,6 @@ def load_args(expname: str, filename) -> SimpleNamespace:
     return SimpleNamespace(**exp_args)
 
 
-def save_train_metrics(
-    outdir: str,
-    score: bool,
-    train_flow_losses: jt.Real[np.ndarray, 'epochs nsteps'],
-    train_score_losses: jt.Real[np.ndarray, 'epochs nsteps'] | None,
-    val_flow_losses: jt.Real[np.ndarray, 'nvals'],
-    val_score_losses: jt.Real[np.ndarray, 'nvals'] | None,
-    lrs: jt.Real[np.ndarray, 'epochs']
-) -> None:
-    if score:
-        np.savez(
-            outdir,
-            train_flow_losses=train_flow_losses,
-            train_score_losses=train_score_losses,
-            val_flow_losses=val_flow_losses,
-            val_score_losses=val_score_losses,
-            lrs=lrs
-        )
-    else:
-        np.savez(
-            outdir,
-            train_flow_losses=train_flow_losses,
-            val_flow_losses=val_flow_losses,
-            lrs=lrs
-        )
 
 
 def plot_grad_flow(

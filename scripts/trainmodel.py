@@ -30,9 +30,9 @@ from trajaugcfm.utils import (
 from script_utils import (
     MODEL_FILENAME,
     TRAINARGS_FILENAME,
+    LOSSES_FILENAME,
     int_or_float,
     save_scalers,
-    save_train_metrics,
     scale_data
 )
 
@@ -329,6 +329,33 @@ def set_up_exp(args: argparse.Namespace) -> None:
         json.dump(vars(args), f, indent=4)
 
 
+def save_train_metrics(
+    outdir: str,
+    score: bool,
+    train_flow_losses: jt.Real[np.ndarray, 'epochs nsteps'],
+    train_score_losses: jt.Real[np.ndarray, 'epochs nsteps'] | None,
+    val_flow_losses: jt.Real[np.ndarray, 'nvals'],
+    val_score_losses: jt.Real[np.ndarray, 'nvals'] | None,
+    lrs: jt.Real[np.ndarray, 'epochs']
+) -> None:
+    if score:
+        np.savez(
+            outdir,
+            train_flow_losses=train_flow_losses,
+            train_score_losses=train_score_losses,
+            val_flow_losses=val_flow_losses,
+            val_score_losses=val_score_losses,
+            lrs=lrs
+        )
+    else:
+        np.savez(
+            outdir,
+            train_flow_losses=train_flow_losses,
+            val_flow_losses=val_flow_losses,
+            lrs=lrs
+        )
+
+
 def main() -> None:
     args = parse_args()
     args = chk_fmt_args(args)
@@ -508,7 +535,7 @@ def main() -> None:
     print('\nSaving results...')
     torch.save(model.state_dict(), os.path.join(args.expname, MODEL_FILENAME))
     save_train_metrics(
-        os.path.join(args.expname, 'losses.npz'),
+        os.path.join(args.expname, LOSSES_FILENAME),
         args.score,
         train_flow_losses,
         train_score_losses,

@@ -259,9 +259,6 @@ def main() -> None:
         obs_scaler,
         hid_scaler,
     )
-    data_val_refs_hid_scaled = hid_scaler.transform(
-        data_val_refs_hid.reshape((-1, dhid))
-    ).reshape(data_val_refs_hid.shape)
 
     print('data val snapshots scaled shape', data_val_snapshots_scaled.shape)
 
