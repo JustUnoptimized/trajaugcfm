@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
 from numpy.lib.npyio import NpzFile
+import pandas as pd
+import seaborn as sns
 from sklearn.model_selection import train_test_split
 
 from trajaugcfm.constants import (
@@ -65,6 +67,10 @@ def parse_args() -> argparse.Namespace:
 
     trajgroup = parser.add_argument_group('traj', 'trajectory plotting args')
     trajgroup.add_argument(
+        '--ax-kde', type=int_or_float, default=2,
+        help='KDE subplot width'
+    )
+    trajgroup.add_argument(
         '--nrefs', type=int, default=100,
         help='Number of reference trajs to plot.' \
             +' Set to -1 to plot all reference trajs.'
@@ -97,6 +103,7 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     assert len(args.extensions) > 0, f'extensions must not be empty but got {args.extensions}'
 
     ## trajgroup check
+    assert args.ax_kde > 0, f'ax-kde must be positive but got {args.ax_kde}'
     assert args.nrefs > 0 or args.nrefs == -1, \
         f'nrefs must be positive or -1 but got {args.nrefs}'
     assert args.ntrajs > 0 or args.ntrajs == -1, \
@@ -181,7 +188,7 @@ def plot_true_trajs(
     refs_hid: jt.Float64[np.ndarray, 'N T d-o'] | None,
     nrefs: int,
     ncols: int,
-    axs: jt.Shaped[np.ndarray, 'nrows ncols']
+    axs: jt.Shaped[np.ndarray, 'nrows ncols 3']
 ) -> None:
     '''Helper method to plot true trajectories.
 
@@ -192,9 +199,7 @@ def plot_true_trajs(
     ts = np.linspace(0, 1, T)
     j = 0
     for i in range(d):
-        r, c, = divmod(i, ncols)
-        ax = axs[r, c]
-
+        ## select reference trajectory, if it exists
         if obsmask[i]:
             val_trajs_di = refs[:nrefs, :, i] if refs is not None else None
         elif not obsmask[i]:
@@ -202,10 +207,37 @@ def plot_true_trajs(
             j += 1
 
         if val_trajs_di is not None:
+            r, c, = divmod(i, ncols)
+            ax = axs[r, c, 1]  ## subplot [1] has trajs
+
+            ## Plot trajectories
             if i == 0:
                 ax.plot(ts, val_trajs_di[0], c='c', alpha=0.25,
                         label='True')
             ax.plot(ts, val_trajs_di[1:].T, c='c', alpha=0.2)
+            ax.set_xlim((0, 1))
+            ax.tick_params(axis='x', which='both', direction='in')
+            ax.tick_params(axis='y', which='both', left=False)
+
+            ## Plot KDEs
+            for ax_idx, t in zip([0, 2], [0, T-1]):
+                ax = axs[r, c, ax_idx]
+                sns.kdeplot(
+                    y=val_trajs_di[:, t],
+                    fill=True,
+                    ax=ax,
+                    color='c',
+                    alpha=0.4
+                )
+                ax.set_xlabel(None)
+                ax.set_ylabel(None)
+                ax.set_xticks([])
+
+            ## Format left KDE plot
+            axs[r, c, 0].xaxis.set_inverted(True)
+
+            ## Format right KDE plot
+            axs[r, c, 2].tick_params(axis='y', which='both', left=False)
 
 
 def plot_trajs(
@@ -219,6 +251,7 @@ def plot_trajs(
     ncols: int,
     ax_w: int | float,
     ax_h: int | float,
+    ax_kde: int | float,
     expname: str,
     extensions: Sequence[str]
 ) -> None:
@@ -231,12 +264,27 @@ def plot_trajs(
     if r > 0:
         nrows += 1
 
-    fig, axs = plt.subplots(
-        nrows=nrows, ncols=ncols, figsize=(ax_w*ncols, ax_h*nrows),
-        squeeze=False, sharex=True
-    )
-    fig.suptitle('Trajectories')
+    ## fig width should account for traj + KDE on both ends per feature
+    fig = plt.figure(figsize=(ncols*(ax_w+(ax_kde*2)), nrows*ax_h))
 
+    subfigs = fig.subfigures(
+        nrows=nrows, ncols=ncols,
+        squeeze=False, wspace=0, hspace=0
+    )
+    subcols = 3  ## [0, 2] for endpoint marginal kde, [1] for trajs
+    wr = [0.2, 0.6, 0.2]  ## width ratios for subcols
+
+    ts =  np.linspace(0, 1, trajs.shape[1])
+
+    ## Make subplots in each subfigure
+    axs = np.empty((nrows, ncols, subcols), dtype=object)
+    for i in range(d):
+        r, c = divmod(i, ncols)
+        axs[r, c] = subfigs[r, c].subplots(
+            ncols=subcols, sharey=True, width_ratios=wr, gridspec_kw=dict(wspace=0)
+        )
+
+    ## Plot ground truth trajectories and KDEs, if any
     if obsmask is not None:
         plot_true_trajs(
             obsmask,
@@ -247,23 +295,48 @@ def plot_trajs(
             axs
         )
 
-    ts = np.linspace(0, 1, trajs.shape[1])
+    T = trajs.shape[1]
+    ts = np.linspace(0, 1, T)
     for i in range(d):
-        r, c, = divmod(i, ncols)
-        ax = axs[r, c]
+        r, c = divmod(i, ncols)
+        ax = axs[r, c, 1]
 
+        ## Plot Trajectories
         ax.set_title(varnames[i])
         if i == 0:
             ax.plot(ts, trajs[0, :, i], c='tab:orange', alpha=0.5,
                     label='Inferred')
             ax.legend(loc='upper right')
+        else:
+            ax.plot(ts, trajs[0,:, i], c='tab:orange', alpha=0.5)
         ax.plot(ts, trajs[1:ntrajs, :, i].T, c='tab:orange', alpha=0.5)
+        ax.set_xlim((0, 1))
+        ax.tick_params(axis='x', which='both', direction='in')
+        ax.tick_params(axis='y', which='both', left=False)
 
-    for i in range(d, nrows*ncols):
-        ax = axs[*divmod(i, ncols)]
-        ax.axis('off')
+        ## Plot KDEs
+        for ax_idx, t in zip([0, 2], [0, T-1]):
+            ax = axs[r, c, ax_idx]
+            sns.kdeplot(
+                y=trajs[:ntrajs, t, i],
+                fill=True,
+                ax=ax,
+                color='tab:orange',
+                alpha=0.4
+            )
+            ax.set_xlabel(None)
+            ax.set_ylabel(None)
+            ax.set_xticks([])
+
+        ## Format left KDE plot
+        axs[r, c, 0].xaxis.set_inverted(True)
+
+        ## Format right KDE plot
+        axs[r, c, 2].tick_params(axis='y', which='both', left=False)
 
     fig.tight_layout()
+    ## left for left-most yticks, bottom for xticks, and top for feature names
+    fig.subplots_adjust(left=0.03, bottom=0.08, top=0.9)
     plot_extensions(fig, expname, 'trajs', extensions)
 
 
@@ -304,7 +377,6 @@ def plot_evals(
         figsize=(metric_ncols*ax_w, nrows*ax_h),
         sharex=True, squeeze=False
     )
-    fig.suptitle('Pointwise Metrics Over All Features')
 
     for i, name in enumerate(pointwise_metrics):
         metric = eval_metrics[name]
@@ -328,6 +400,16 @@ def plot_evals(
     plot_extensions(fig, expname, 'pw_metric_plots', extensions)
 
     ## Plot distributional distances
+    nrows, r = divmod(len(dist_metrics), metric_ncols)
+    if r > 0:
+        nrows += 1
+
+    fig, axs = plt.subplots(
+        nrows=nrows, ncols=metric_ncols,
+        figsize=(metric_ncols*ax_w, nrows*ax_h),
+        sharex=True, squeeze=False
+    )
+
     for i, name in enumerate(dist_metrics):
         metric = eval_metrics[name]
         ax = axs[*divmod(i, metric_ncols)]
@@ -495,6 +577,7 @@ def main() -> None:
         args.feature_ncols,
         args.ax_w,
         args.ax_h,
+        args.ax_kde,
         args.expname,
         args.extensions
     )
