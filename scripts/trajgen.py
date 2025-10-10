@@ -48,11 +48,13 @@ class TorchTimeRFF:
         self,
         rff_seed: int,
         rff_scale: float,
-        rff_dim: int
+        rff_dim: int,
+        device: Literal['cpu', 'cuda']='cpu',
     ) -> None:
         prng = np.random.default_rng(seed=rff_seed)
         B = prng.normal(loc=0, scale=rff_scale, size=(1, rff_dim)) * 2 * np.pi
-        self.B = torch.from_numpy(B.astype(np.float32))  ## (1, rff_dim)
+        self.device = device
+        self.B = torch.from_numpy(B.astype(np.float32)).to(device)  ## (1, rff_dim)
 
     def __call__(
         self,
@@ -243,6 +245,9 @@ def main() -> None:
         hid_scaler,
     )
 
+    device = 'cuda' if (not args.nogpu) and torch.cuda.is_available() else 'cpu'
+    print('device:', device)
+
     print(f'\nLoading model from {os.path.join(args.expname, MODEL_FILENAME)}...')
     d_vars = data_train_snapshots.shape[-1]
     d_out = d_vars
@@ -263,17 +268,15 @@ def main() -> None:
     model.load_state_dict(torch.load(os.path.join(args.expname, MODEL_FILENAME), weights_only=True))
     print(model)
 
-    device = 'cuda' if (not args.nogpu) and torch.cuda.is_available() else 'cpu'
-    print('device:', device)
-    model = model.to(device)
-
     t_enhancer = None
     if exp_args.use_time_enrich:
         if exp_args.time_enrich == 'rff':
+            ## Make sure TorchTimeRFF lives on same device!
             t_enhancer = TorchTimeRFF(
                 exp_args.rff_seed,
                 exp_args.rff_scale,
-                exp_args.rff_dim
+                exp_args.rff_dim,
+                device=device,
             )
 
     model_sde = SDE(
@@ -283,7 +286,7 @@ def main() -> None:
     )
     print(model_sde)
 
-    model_sde.eval()
+
     prng = np.random.default_rng(seed=args.seed)
     nx0 = data_val_snapshots_scaled.shape[0] if args.n == -1 else args.n
     idxs = prng.choice(data_val_snapshots_scaled.shape[0], size=nx0, replace=False)
@@ -291,6 +294,11 @@ def main() -> None:
     nts = data_val_refs_scaled.shape[1] if args.nt == -1 else args.nt
     ts = torch.linspace(0, 1, nts)
 
+    model_sde = model_sde.to(device)
+    x0 = x0.to(device)
+    ts = ts.to(device)
+
+    model_sde.eval()
     with torch.no_grad():
         trajs = sdeint(
             model_sde,
