@@ -32,6 +32,7 @@ from script_utils import (
     TRAINARGS_FILENAME,
     LOSSES_FILENAME,
     int_or_float,
+    load_data,
     save_scalers,
     scale_data
 )
@@ -56,7 +57,11 @@ def parse_args() -> argparse.Namespace:
     datagroup = parser.add_argument_group('datagroup', 'dataset selection args')
     datagroup.add_argument(
         '--data', type=str, required=True,
-        help='Directory in data/<data>/ containing data.npy'
+        help='Directory in data/<data>/ containing data.npy. Data should have shape (N, T, d).'
+    )
+    datagroup.add_argument(
+        '--source', type=str, choices=['synth', 'marm'], required=True,
+        help='Data source. Marm requires additional preprocessing.'
     )
     datagroup.add_argument(
         '--drugcombidx', type=int, default=0,
@@ -263,12 +268,13 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     assert os.path.exists(datapath), f'{datapath} not found'
     args.data = datapath
 
-    idx2rcmcpath = os.path.join(datadir, IDX2RCMC_SAVENAME)
-    assert os.path.exists(idx2rcmcpath), f'{idx2rcmcpath} not found'
-    with open(idx2rcmcpath, 'rb') as f:
-        idx2rcmc = pickle.load(f)
-    assert args.drugcombidx in idx2rcmc.keys(), \
-        f'Drug combination {args.drugcombidx} not found'
+    if args.source == 'marm':
+        idx2rcmcpath = os.path.join(datadir, IDX2RCMC_SAVENAME)
+        assert os.path.exists(idx2rcmcpath), f'{idx2rcmcpath} not found'
+        with open(idx2rcmcpath, 'rb') as f:
+            idx2rcmc = pickle.load(f)
+        assert args.drugcombidx in idx2rcmc.keys(), \
+            f'Drug combination {args.drugcombidx} not found'
 
     assert args.trainsize > 0, f'Trainsize must be positive but got {args.trainsize}'
     assert args.refsize > 0, f'Refsize must be positive but got {args.refsize}'
@@ -362,14 +368,15 @@ def main() -> None:
     set_up_exp(args)
 
     print('\nLoading data...')
-    data = np.load(args.data)
-    dynmask = build_indexer(OBS, dropvars=CONSTOBS)
-    data = data[:, :, :, dynmask]
-
-    dyn_if_vars = [dynvar for dynvar in DYNOBS if '_IF' in dynvar]
-    dynifmask = build_indexer(DYNOBS, dropvars=dyn_if_vars)
-    data = data[:, :, :, dynifmask]
-    data = data[args.drugcombidx]
+    # data = np.load(args.data)
+    # dynmask = build_indexer(OBS, dropvars=CONSTOBS)
+    # data = data[:, :, :, dynmask]
+#
+    # dyn_if_vars = [dynvar for dynvar in DYNOBS if '_IF' in dynvar]
+    # dynifmask = build_indexer(DYNOBS, dropvars=dyn_if_vars)
+    # data = data[:, :, :, dynifmask]
+    # data = data[args.drugcombidx]
+    data = load_data(args.data, args.source, args.drugcombidx)
 
     obsmask = np.zeros(data.shape[-1], dtype=bool)
     obsmask[args.obsidxs] = True

@@ -2,7 +2,7 @@ from collections.abc import Iterator
 import json
 import os
 from types import SimpleNamespace
-from typing import Unpack
+from typing import Literal, Unpack
 
 import jaxtyping as jt
 import joblib
@@ -11,7 +11,15 @@ from matplotlib.axes import Axes
 from sklearn.preprocessing import StandardScaler
 from torch.nn.parameter import Parameter
 
-from trajaugcfm.constants import RESDIR
+from trajaugcfm.constants import (
+    CONSTOBS,
+    DYNOBS,
+    OBS,
+    RESDIR
+)
+from trajaugcfm.utils import (
+    build_indexer
+)
 
 type ScaledData = tuple[
     jt.Real[np.ndarray, 'Ntrain margidx dim'],
@@ -52,6 +60,18 @@ def load_args(expname: str, filename) -> SimpleNamespace:
     return SimpleNamespace(**exp_args)
 
 
+def load_data(datapath: str, source: Literal['synth', 'marm'], drugcombidx: int) -> np.ndarray:
+    data = np.load(datapath)
+    if source == 'marm':
+        dynmask = build_indexer(OBS, dropvars=CONSTOBS)
+        data = data[:, :, :, dynmask]
+
+        dyn_if_vars = [dynvar for dynvar in DYNOBS if '_IF' in dynvar]
+        dynifmask = build_indexer(DYNOBS, dropvars=dyn_if_vars)
+        data = data[:, :, :, dynifmask]
+        data = data[drugcombidx]
+
+    return data
 
 
 def plot_grad_flow(

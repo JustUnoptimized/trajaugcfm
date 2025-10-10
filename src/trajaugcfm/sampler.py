@@ -296,8 +296,8 @@ class GCFMSamplerBase(IterableDataset):
         ts = ts.reshape((-1, 1))               ## (nt, 1)
         for i, idx in enumerate(refidxs):
             mu_i, std_i = self.gprs[idx].predict(ts, return_std=True)
-            mu_t_gpr[i] = mu_i
-            sigma_t_gpr[i] = std_i
+            mu_t_gpr[i] = mu_i.reshape(mu_i.shape[0], self.nobs)
+            sigma_t_gpr[i] = std_i.reshape(std_i.shape[0], self.nobs)
         return mu_t_gpr, sigma_t_gpr
 
     def _compute_gpr_dmudt(

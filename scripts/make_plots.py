@@ -32,6 +32,7 @@ from script_utils import (
     TRAJGENARGS_FILENAME,
     int_or_float,
     load_args,
+    load_data,
     load_scalers,
     scale_data_with_scalers,
 )
@@ -470,14 +471,15 @@ def main() -> None:
     eval_args = load_args(args.expname, EVALARGS_FILENAME)
 
     print('Recreating experiment data...\nLoading experiment data...')
-    data = np.load(exp_args.data)
-    dynmask = build_indexer(OBS, dropvars=CONSTOBS)
-    data = data[:, :, :, dynmask]
-
-    dyn_if_vars = [dynvar for dynvar in DYNOBS if '_IF' in dynvar]
-    dynifmask = build_indexer(DYNOBS, dropvars=dyn_if_vars)
-    data = data[:, :, :, dynifmask]
-    data = data[exp_args.drugcombidx]
+    # data = np.load(exp_args.data)
+    # dynmask = build_indexer(OBS, dropvars=CONSTOBS)
+    # data = data[:, :, :, dynmask]
+#
+    # dyn_if_vars = [dynvar for dynvar in DYNOBS if '_IF' in dynvar]
+    # dynifmask = build_indexer(DYNOBS, dropvars=dyn_if_vars)
+    # data = data[:, :, :, dynifmask]
+    # data = data[exp_args.drugcombidx]
+    data = load_data(exp_args.data, exp_args.source, exp_args.drugcombidx)
 
     obsmask = np.zeros(data.shape[-1], dtype=bool)
     obsmask[exp_args.obsidxs] = True
