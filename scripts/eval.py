@@ -57,36 +57,6 @@ def parse_args() -> argparse.Namespace:
         help='Regularization for entropic EMD'
     )
 
-    plotgroup = parser.add_argument_group('plot', 'plot args')
-    plotgroup.add_argument(
-        '--nplot', type=int, default=20,
-        help='Number of individual trajectory losses to plot'
-    )
-    plotgroup.add_argument(
-        '--ncols', type=int, default=2,
-        help='Number of columns of subplots showing metrics'
-    )
-    plotgroup.add_argument(
-        '--ax-h', type=int_or_float, default=6,
-        help='Height of each metric subplot'
-    )
-    plotgroup.add_argument(
-        '--ax-w', type=int_or_float, default=8,
-        help='Width of each metric subplot'
-    )
-    plotgroup.add_argument(
-        '--ncols-indiv', type=int, default=4,
-        help='Number of columns of subplots showing metrics on individual variables'
-    )
-    plotgroup.add_argument(
-        '--ax-h-indiv', type=int_or_float, default=3,
-        help='Height of each metric subplot for an individual variable'
-    )
-    plotgroup.add_argument(
-        '--ax-w-indiv', type=int_or_float, default=4,
-        help='Width of each metric subplot for an individual variable'
-    )
-
     return parser.parse_args()
 
 
@@ -98,16 +68,6 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
 
     ## metricgroup check
     assert args.reg > 0, f'reg must be positive but got {args.reg}'
-
-    ## plotgroup check
-    assert args.nplot > 0 or args.nplot == -1, \
-        f'nplot must be positive or -1 but got {args.nplot}'
-    assert args.ncols > 0, f'ncols must be positive but got {args.ncols}'
-    assert args.ax_w > 0, f'ax-w must be positive but got {args.ax_w}'
-    assert args.ax_h > 0, f'ax-h must be positive but got {args.ax_h}'
-    assert args.ncols_indiv > 0, f'ncols-indiv must be positive but got {args.ncols_indiv}'
-    assert args.ax_w_indiv > 0, f'ax-w-indiv must be positive but got {args.ax_w_indiv}'
-    assert args.ax_h_indiv > 0, f'ax-h-indiv must be positive but got {args.ax_h_indiv}'
 
     return args
 

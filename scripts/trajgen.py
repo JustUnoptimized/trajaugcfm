@@ -131,31 +131,6 @@ def parse_args() -> argparse.Namespace:
             +' Set to -1 to use all validation time points'
     )
 
-    plotgroup = parser.add_argument_group('plot', 'plot args')
-    plotgroup.add_argument(
-        '--ncols', type=int, default=4,
-        help='Number of subfigure cols in trajectory plot'
-    )
-    plotgroup.add_argument(
-        '--ax-w', type=int_or_float, default=4,
-        help='Subplot width'
-    )
-    plotgroup.add_argument(
-        '--ax-h', type=int_or_float, default=3,
-        help='Subplot height'
-    )
-    plotgroup.add_argument(
-        '--nrefplot', type=int, default=100,
-        help='Number of reference trajs to plot. ' \
-            +' Set to -1 to plot all reference trajs.'
-    )
-    plotgroup.add_argument(
-        '--ntrajplot', type=int, default=50,
-        help='Number of inferred trajs from sdesolve() to plot. ' \
-            +' Set to -1 to plot all inferred trajs.'
-    )
-
-
     miscgroup = parser.add_argument_group('misc', 'misc args')
     miscgroup.add_argument(
         '--nogpu', action='store_true',
@@ -179,15 +154,6 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     assert args.sigma > 0, f'sigma must be positive but got {args.sigma}'
     assert args.n > 0 or args.n == -1, f'n must be positive or -1 but got {args.n}'
     assert args.nt > 0 or args.nt == -1, f'nt must be positive or -1 but got {args.nt}'
-
-    ## plotgroup check
-    assert args.ncols > 0, f'ncols must be positive but got {args.ncols}'
-    assert args.ax_w > 0, f'ax-w must be positive but got {args.ax_w}'
-    assert args.ax_h > 0, f'ax-h must be positive but got {args.ax_h}'
-    assert args.nrefplot > 0 or args.nrefplot == -1, \
-        f'nrefplot must be positive or -1 but got {args.nrefplot}'
-    assert args.ntrajplot > 0 or args.ntrajplot == -1, \
-        f'ntrajplot must be positive or -1 but got {args.ntrajplot}'
 
     ## miscgroup check
     if args.seed is not None:
