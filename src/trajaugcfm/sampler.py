@@ -228,8 +228,10 @@ class GCFMSamplerBase(IterableDataset):
         return gprs
 
     def _get_xs_minibatch(self) -> jt.Real[np.ndarray, 'n margidx dims']:
-        '''Sample minibatch from each marginal snapshot'''
-        idxs = self.prng.integers(self.Xs.shape[0], size=(self.n, self.Xs.shape[1]))
+        '''Sample minibatch w/o replacement from each marginal snapshot'''
+        idxs = np.empty((self.n, self.Xs.shape[1]), dtype=int)
+        for i in range(self.Xs.shape[1]):
+            idxs[:, i] = self.prng.choice(self.Xs.shape[0], size=self.n, replace=False)
         return self.Xs[idxs, np.arange(self.Xs.shape[1])[None, :]]
 
     def _sample_z_given_refs(
