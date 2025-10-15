@@ -221,13 +221,14 @@ def load_scalers(outdir: str) -> tuple[StandardScaler, StandardScaler]:
     return obs_scaler, hid_scaler
 
 
-def exitcodewrapper(func: Callable[..., None]) -> Callable[..., None]:
-    @wraps
+def exitcodewrapper(f: Callable[..., None]) -> Callable[..., None]:
+    @wraps(f)
     def wrapper(*args, **kwargs):
         try:
-            func(*args, **kwargs)
+            f(*args, **kwargs)
             sys.exit(0)
         except Exception as e:
             print(f'Error: {e}', file=sys.stderr)
             sys.exit(1)
     return wrapper
+
