@@ -1,6 +1,8 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from functools import wraps
 import json
 import os
+import sys
 from types import SimpleNamespace
 from typing import Literal, Unpack
 
@@ -38,6 +40,7 @@ TRAJGENARGS_FILENAME = 'trajgen_args.json'
 TRAJGEN_FILENAME = 'trajs_scaled.npy'
 EVALARGS_FILENAME = 'eval_args.json'
 EVALS_FILENAME = 'evals.npz'
+PLOTARGS_FILENAME = 'plot_args.json'
 
 
 def int_or_float(x: str) -> int | float:
@@ -53,15 +56,19 @@ def int_or_float(x: str) -> int | float:
             )
 
 
-def load_args(expname: str, filename) -> SimpleNamespace:
+def load_args(expname: str, filename: str) -> SimpleNamespace:
     exppath = os.path.join(RESDIR, expname)
     with open(os.path.join(exppath, filename), 'r') as f:
         exp_args = json.load(f)
     return SimpleNamespace(**exp_args)
 
 
-def load_data(datapath: str, source: Literal['synth', 'marm'], drugcombidx: int) -> np.ndarray:
-    data = np.load(datapath)
+def load_data(
+    datadir: str,
+    source: Literal['synth', 'marm'],
+    drugcombidx: int
+) -> tuple[list[str], np.ndarray]:
+    data = np.load(os.path.join(datadir, 'data.npy'))
     if source == 'marm':
         dynmask = build_indexer(OBS, dropvars=CONSTOBS)
         data = data[:, :, :, dynmask]
@@ -70,8 +77,12 @@ def load_data(datapath: str, source: Literal['synth', 'marm'], drugcombidx: int)
         dynifmask = build_indexer(DYNOBS, dropvars=dyn_if_vars)
         data = data[:, :, :, dynifmask]
         data = data[drugcombidx]
+        varnames = [varname for i, varname in enumerate(DYNOBS) if dynifmask[i]]
+    elif source == 'synth':
+        with open(os.path.join(datadir, 'varnames.json'), 'r') as f:
+            varnames = json.load(f)
 
-    return data
+    return data, varnames
 
 
 def plot_grad_flow(
@@ -209,3 +220,14 @@ def load_scalers(outdir: str) -> tuple[StandardScaler, StandardScaler]:
     hid_scaler = joblib.load(os.path.join(outdir, HID_SCALER_FILENAME))
     return obs_scaler, hid_scaler
 
+
+def exitcodewrapper(func: Callable[..., None]) -> Callable[..., None]:
+    @wraps
+    def wrapper(*args, **kwargs):
+        try:
+            func(*args, **kwargs)
+            sys.exit(0)
+        except Exception as e:
+            print(f'Error: {e}', file=sys.stderr)
+            sys.exit(1)
+    return wrapper

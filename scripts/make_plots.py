@@ -27,9 +27,11 @@ from script_utils import (
     EVALS_FILENAME,
     LOSSES_FILENAME,
     MODEL_FILENAME,
+    PLOTARGS_FILENAME,
     TRAINARGS_FILENAME,
     TRAJGEN_FILENAME,
     TRAJGENARGS_FILENAME,
+    exitcodewrapper,
     int_or_float,
     load_args,
     load_data,
@@ -58,7 +60,7 @@ def parse_args() -> argparse.Namespace:
         help='Number of subplot cols for figures involving evaluation metrics'
     )
     commongroup.add_argument(
-        '--feature-ncols', type=int, default=4,
+        '--feature-ncols', type=int, default=3,
         help='Number of subplot cols for figures involving individual features (trajs and errors)'
     )
     commongroup.add_argument(
@@ -115,6 +117,13 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
         f'nevals must be positive or -1 but got {args.nevals}'
 
     return args
+
+
+def save_plot_args(args: argparse.Namespace, expname: str) -> None:
+    '''Save args for plot instance to json file.'''
+    plotargs_path = os.path.join(expname, PLOTARGS_FILENAME)
+    with open(plotargs_path, 'w') as f:
+        json.dump(vars(args), f, indent=4)
 
 
 def plot_extensions(
@@ -463,23 +472,17 @@ def plot_evals(
     plot_extensions(fig, expname, 'metric_plots_indiv', extensions)
 
 
+@exitcodewrapper
 def main() -> None:
     args = parse_args()
     args = chk_fmt_args(args)
     exp_args = load_args(args.expname, TRAINARGS_FILENAME)
     inf_args = load_args(args.expname, TRAJGENARGS_FILENAME)
     eval_args = load_args(args.expname, EVALARGS_FILENAME)
+    save_plot_args(args, args.expname)
 
     print('Recreating experiment data...\nLoading experiment data...')
-    # data = np.load(exp_args.data)
-    # dynmask = build_indexer(OBS, dropvars=CONSTOBS)
-    # data = data[:, :, :, dynmask]
-#
-    # dyn_if_vars = [dynvar for dynvar in DYNOBS if '_IF' in dynvar]
-    # dynifmask = build_indexer(DYNOBS, dropvars=dyn_if_vars)
-    # data = data[:, :, :, dynifmask]
-    # data = data[exp_args.drugcombidx]
-    data = load_data(exp_args.data, exp_args.source, exp_args.drugcombidx)
+    data, varnames = load_data(exp_args.data, exp_args.source, exp_args.drugcombidx)
 
     obsmask = np.zeros(data.shape[-1], dtype=bool)
     obsmask[exp_args.obsidxs] = True
@@ -564,7 +567,6 @@ def main() -> None:
 
     ## Traj Gen Plots
     print('Loading saved trajectories...')
-    varnames = [varname for i, varname in enumerate(DYNOBS) if dynifmask[i]]
     trajs = np.load(os.path.join(args.expname, TRAJGEN_FILENAME))
 
     print('Plotting trajectories...')
@@ -605,3 +607,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+

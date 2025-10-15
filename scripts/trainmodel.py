@@ -31,6 +31,7 @@ from script_utils import (
     MODEL_FILENAME,
     TRAINARGS_FILENAME,
     LOSSES_FILENAME,
+    exitcodewrapper,
     int_or_float,
     load_data,
     save_scalers,
@@ -266,7 +267,7 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     datadir = os.path.join(DATADIR, args.data)
     datapath = os.path.join(datadir, 'data.npy')
     assert os.path.exists(datapath), f'{datapath} not found'
-    args.data = datapath
+    args.data = datadir
 
     if args.source == 'marm':
         idx2rcmcpath = os.path.join(datadir, IDX2RCMC_SAVENAME)
@@ -362,21 +363,14 @@ def save_train_metrics(
         )
 
 
+@exitcodewrapper
 def main() -> None:
     args = parse_args()
     args = chk_fmt_args(args)
     set_up_exp(args)
 
     print('\nLoading data...')
-    # data = np.load(args.data)
-    # dynmask = build_indexer(OBS, dropvars=CONSTOBS)
-    # data = data[:, :, :, dynmask]
-#
-    # dyn_if_vars = [dynvar for dynvar in DYNOBS if '_IF' in dynvar]
-    # dynifmask = build_indexer(DYNOBS, dropvars=dyn_if_vars)
-    # data = data[:, :, :, dynifmask]
-    # data = data[args.drugcombidx]
-    data = load_data(args.data, args.source, args.drugcombidx)
+    data, varnames = load_data(args.data, args.source, args.drugcombidx)
 
     obsmask = np.zeros(data.shape[-1], dtype=bool)
     obsmask[args.obsidxs] = True
@@ -554,3 +548,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+

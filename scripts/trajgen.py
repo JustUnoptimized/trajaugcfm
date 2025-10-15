@@ -20,13 +20,11 @@ from trajaugcfm.constants import (
     DYNOBS,
     OBS,
 )
-# from trajaugcfm.sampler import TrajAugCFMSampler
 from trajaugcfm.models import (
     MLP,
     FlowScoreMLP,
     flowscore_wrapper
 )
-# from trajaugcfm.sampler import TimeRFFMixin
 from trajaugcfm.utils import (
     build_indexer
 )
@@ -36,6 +34,7 @@ from script_utils import (
     TRAINARGS_FILENAME,
     TRAJGENARGS_FILENAME,
     TRAJGEN_FILENAME,
+    exitcodewrapper,
     int_or_float,
     load_args,
     load_data,
@@ -165,13 +164,14 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-def save_trajgen_args(args: dict[str, Any], expname: str) -> None:
+def save_trajgen_args(args: argparse.Namespace, expname: str) -> None:
     '''Save args for trajgen instance to json file.'''
     trajargs_path = os.path.join(expname, TRAJGENARGS_FILENAME)
     with open(trajargs_path, 'w') as f:
         json.dump(vars(args), f, indent=4)
 
 
+@exitcodewrapper
 def main() -> None:
     args = parse_args()
     args = chk_fmt_args(args)
@@ -179,15 +179,7 @@ def main() -> None:
     save_trajgen_args(args, exp_args.expname)
 
     print('Recreating experiment data...\nLoading experiment data...')
-    # data = np.load(exp_args.data)
-    # dynmask = build_indexer(OBS, dropvars=CONSTOBS)
-    # data = data[:, :, :, dynmask]
-#
-    # dyn_if_vars = [dynvar for dynvar in DYNOBS if '_IF' in dynvar]
-    # dynifmask = build_indexer(DYNOBS, dropvars=dyn_if_vars)
-    # data = data[:, :, :, dynifmask]
-    # data = data[exp_args.drugcombidx]
-    data = load_data(exp_args.data, exp_args.source, exp_args.drugcombidx)
+    data, varnames = load_data(exp_args.data, exp_args.source, exp_args.drugcombidx)
 
     obsmask = np.zeros(data.shape[-1], dtype=bool)
     obsmask[exp_args.obsidxs] = True

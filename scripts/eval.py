@@ -31,6 +31,7 @@ from script_utils import (
     TRAJGEN_FILENAME,
     EVALARGS_FILENAME,
     EVALS_FILENAME,
+    exitcodewrapper,
     int_or_float,
     load_args,
     load_data,
@@ -73,7 +74,7 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-def save_eval_args(args: dict[str, Any], expname: str) -> None:
+def save_eval_args(args: argparse.Namespace, expname: str) -> None:
     '''Save args for eval instance to json file.'''
     evalargs_path = os.path.join(expname, EVALARGS_FILENAME)
     with open(evalargs_path, 'w') as f:
@@ -146,6 +147,7 @@ def compute_distribution_metrics(
     return dist_metrics
 
 
+@exitcodewrapper
 def main() -> None:
     args = parse_args()
     args = chk_fmt_args(args)
@@ -154,15 +156,7 @@ def main() -> None:
     save_eval_args(args, args.expname)
 
     print('Recreating experiment data...\nLoading experiment data...')
-    # data = np.load(exp_args.data)
-    # dynmask = build_indexer(OBS, dropvars=CONSTOBS)
-    # data = data[:, :, :, dynmask]
-#
-    # dyn_if_vars = [dynvar for dynvar in DYNOBS if '_IF' in dynvar]
-    # dynifmask = build_indexer(DYNOBS, dropvars=dyn_if_vars)
-    # data = data[:, :, :, dynifmask]
-    # data = data[exp_args.drugcombidx]
-    data = load_data(exp_args.data, exp_args.source, exp_args.drugcombidx)
+    data, varnames = load_data(exp_args.data, exp_args.source, exp_args.drugcombidx)
 
     obsmask = np.zeros(data.shape[-1], dtype=bool)
     obsmask[exp_args.obsidxs] = True
@@ -256,3 +250,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
