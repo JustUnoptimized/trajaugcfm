@@ -146,8 +146,6 @@ def val_step(
     return flow_loss, score_loss
 
 
-## TODO: maybe add typevar and change return signature?
-## TODO: return learning rate over epochs for plotting?
 def train(
     model: nn.Module,
     opt: torch.optim.Optimizer,

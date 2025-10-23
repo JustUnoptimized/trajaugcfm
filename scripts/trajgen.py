@@ -7,7 +7,6 @@ from typing import Any, Literal
 import jaxtyping as jt
 import numpy as np
 from sklearn.model_selection import train_test_split
-import tqdm
 import torch
 import torch.nn as nn
 from torchsde import sdeint
@@ -98,7 +97,8 @@ class SDE(nn.Module):
         x = torch.cat((t, y), dim=1)
         vt, st = self.model(x)
         self.NFE += 1
-        return vt + st
+        ## st == None if not using score
+        return vt + st if st is not None else vt
 
     def g(self, t, y):
         return torch.ones_like(y) * self.sigma
@@ -259,7 +259,13 @@ def main() -> None:
         model = MLP(d_in, d_out, w=w, h=h)
         model = flowscore_wrapper(model)
 
-    model.load_state_dict(torch.load(os.path.join(args.expname, MODEL_FILENAME), weights_only=True))
+    model.load_state_dict(
+        torch.load(
+            os.path.join(args.expname, MODEL_FILENAME),
+            weights_only=True,
+            map_location='cpu' if device == 'cpu' else None
+        )
+    )
     print(model)
 
     t_enhancer = None

@@ -35,7 +35,8 @@ from script_utils import (
     int_or_float,
     load_data,
     save_scalers,
-    scale_data
+    scale_data,
+    typename
 )
 
 from train import train
@@ -514,7 +515,7 @@ def main() -> None:
         lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
     else:
         lr_sched = None
-    print('lr scheduler:', lr_sched)
+    print('lr scheduler:', typename(lr_sched))
     lossfn = torch.nn.MSELoss()
 
     print('\nTraining model...')

@@ -132,7 +132,7 @@ def compute_distribution_metrics(
 
     a = np.full((N,), 1./N)
     b = a.copy()
-    for i in trange(T, desc='Computing distributional distances'):
+    for i in trange(T, desc='Computing distributional distances', miniters=10):
         M = cdist(y[:, i], yhat[:, i], metric='sqeuclidean')
         emds[i] = ot.emd2(a, b, M)
         sinkhorns[i] = ot.sinkhorn2(a, b, M, reg, method=method)

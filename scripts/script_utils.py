@@ -3,8 +3,9 @@ from functools import wraps
 import json
 import os
 import sys
+import traceback
 from types import SimpleNamespace
-from typing import Literal, Unpack
+from typing import Any, Literal, Unpack
 
 import jaxtyping as jt
 import joblib
@@ -54,6 +55,14 @@ def int_or_float(x: str) -> int | float:
             raise argparse.ArgumentTypeError(
                 f'Could not convert {x} to a int or float'
             )
+
+
+def typename(x: Any) -> str:
+    '''Return name of type(x)
+
+    Note that if x is None, the return value is the string None.
+    '''
+    return type(x).__name__ if x is not None else 'None'
 
 
 def load_args(expname: str, filename: str) -> SimpleNamespace:
@@ -123,36 +132,15 @@ def scale_data(
     obs_scaler.partial_fit(data_train_refs.reshape((-1, dobs)))
     hid_scaler.fit(data_train_snapshots[:, :, hidmask].reshape((-1, dhid)))
 
-    data_train_snapshots_scaled = np.zeros_like(data_train_snapshots)
-    data_val_snapshots_scaled = np.zeros_like(data_val_snapshots)
-
-    data_train_snapshots_scaled[:, :, obsmask] = obs_scaler.transform(
-        data_train_snapshots[:, :, obsmask].reshape((-1, dobs))
-    ).reshape(data_train_snapshots[:, :, obsmask].shape)
-    data_train_snapshots_scaled[:, :, hidmask] = hid_scaler.transform(
-        data_train_snapshots[:, :, hidmask].reshape((-1, dhid))
-    ).reshape(data_train_snapshots[:, :, hidmask].shape)
-    data_train_refs_scaled = obs_scaler.transform(
-        data_train_refs.reshape((-1, dobs))
-    ).reshape(data_train_refs.shape)
-
-    data_val_snapshots_scaled[:, :, obsmask] = obs_scaler.transform(
-        data_val_snapshots[:, :, obsmask].reshape((-1, dobs))
-    ).reshape(data_val_snapshots[:, :, obsmask].shape)
-    data_val_snapshots_scaled[:, :, hidmask] = hid_scaler.transform(
-        data_val_snapshots[:, :, hidmask].reshape((-1, dhid))
-    ).reshape(data_val_snapshots[:, :, hidmask].shape)
-    data_val_refs_scaled = obs_scaler.transform(
-        data_val_refs.reshape((-1, dobs))
-    ).reshape(data_val_refs.shape)
-
-
-    ## only here to use packing/unpacking to keep line lengths short
-    scaled_data = (
-        data_train_snapshots_scaled,
-        data_train_refs_scaled, 
-        data_val_snapshots_scaled,
-        data_val_refs_scaled
+    scaled_data = scale_data_with_scalers(
+        data_train_snapshots,
+        data_train_refs,
+        data_val_snapshots,
+        data_val_refs,
+        obsmask,
+        hidmask,
+        obs_scaler,
+        hid_scaler
     )
 
     return *scaled_data, obs_scaler, hid_scaler
@@ -194,7 +182,6 @@ def scale_data_with_scalers(
         data_val_refs.reshape((-1, dobs))
     ).reshape(data_val_refs.shape)
 
-
     ## only here to use packing/unpacking to keep line lengths short
     scaled_data = (
         data_train_snapshots_scaled,
@@ -228,7 +215,7 @@ def exitcodewrapper(f: Callable[..., None]) -> Callable[..., None]:
             f(*args, **kwargs)
             sys.exit(0)
         except Exception as e:
-            print(f'Error: {e}', file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
             sys.exit(1)
     return wrapper
 
