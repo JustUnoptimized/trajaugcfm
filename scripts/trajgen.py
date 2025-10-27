@@ -1,8 +1,7 @@
 import argparse
 import json
 import os
-from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Literal
 
 import jaxtyping as jt
 import numpy as np
@@ -12,20 +11,12 @@ import torch.nn as nn
 from torchsde import sdeint
 
 from trajaugcfm.constants import (
-    BASEDIR,
-    DATADIR,
     RESDIR,
-    CONSTOBS,
-    DYNOBS,
-    OBS,
 )
 from trajaugcfm.models import (
     MLP,
     FlowScoreMLP,
     flowscore_wrapper
-)
-from trajaugcfm.utils import (
-    build_indexer
 )
 from script_utils import (
     METRICS_FILENAME,
@@ -34,7 +25,6 @@ from script_utils import (
     TRAJGENARGS_FILENAME,
     TRAJGEN_FILENAME,
     exitcodewrapper,
-    int_or_float,
     load_args,
     load_data,
     load_scalers,
@@ -185,9 +175,6 @@ def main() -> None:
     obsmask[exp_args.obsidxs] = True
     hidmask = ~obsmask
     tidxs = [0, -1]
-    dobs = obsmask.sum()
-    dhid = hidmask.sum()
-    d = dobs + dhid
 
     print('\nSplitting into train-val sets for snapshots and references')
     data_train, data_val = train_test_split(
@@ -210,7 +197,6 @@ def main() -> None:
         random_state=exp_args.seed if exp_args.seed is None else exp_args.seed+4
     )
     data_val_snapshots = data_val_snapshots[:, tidxs]
-    data_val_refs_hid = data_val_refs[:, :, hidmask]
     data_val_refs = data_val_refs[:, :, obsmask]
     print('data val snapshots shape', data_val_snapshots.shape)
     print('data val refs shape', data_val_refs.shape)

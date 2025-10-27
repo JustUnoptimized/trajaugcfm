@@ -1,6 +1,5 @@
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 import os
-from itertools import product
 from time import time
 from typing import (
     Literal,
@@ -10,7 +9,7 @@ from typing import (
 
 import jaxtyping as jt
 import numpy as np
-from scipy.linalg import issymmetric
+from scipy.linalg import issymmetric  # noqa: F401
 from scipy.spatial.distance import cdist
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import (
@@ -35,13 +34,13 @@ type RBFK_Bounds = tuple[int | float, int | float] | Literal['fixed']
 type Times = jt.Float64[np.ndarray, 'nt rff_dims*2'] \
              | jt.Float64[np.ndarray, 'nt 1']
 type Sigma_T = jt.Float64[np.ndarray, 'k nt dims dims'] \
-               | jt.Float64[np.ndarray, 'nt'] \
+               | jt.Float64[np.ndarray, ' nt'] \
                | float
 type Aux = jt.Float64[np.ndarray, 'k dims dims'] \
-           | jt.Float64[np.ndarray, 'nt'] \
+           | jt.Float64[np.ndarray, ' nt'] \
            | None
 type A_T_Prime_A_T_Inv = jt.Float64[np.ndarray, 'k nt dims dims'] \
-                         | jt.Float[np.ndarray, 'nt'] \
+                         | jt.Float[np.ndarray, ' nt'] \
                          | None
 type GCFMBatch = tuple[
     jt.Float32[Tensor, 'batch rff_dims*2'] | jt.Float32['batch 1'],  ## ts
@@ -287,8 +286,8 @@ class GCFMSamplerBase(IterableDataset):
 
     def _compute_mu_t_sigma_t_gpr(
         self,
-        refidxs: jt.Int[np.ndarray, 'k'],
-        ts: jt.Real[np.ndarray, 'nt']
+        refidxs: jt.Int[np.ndarray, ' k'],
+        ts: jt.Real[np.ndarray, ' nt']
     ) -> tuple[jt.Real[np.ndarray, 'k nt obs'], jt.Real[np.ndarray, 'k nt obs']]:
         '''Compute mu_t and sigma_t from GPRs'''
         mu_t_gpr = np.zeros((refidxs.shape[0], ts.shape[0], self.Xrefs.shape[-1]))
@@ -302,8 +301,8 @@ class GCFMSamplerBase(IterableDataset):
 
     def _compute_gpr_dmudt(
         self,
-        refidxs: jt.Int[np.ndarray, 'k'],
-        ts: jt.Real[np.ndarray, 'nt']
+        refidxs: jt.Int[np.ndarray, ' k'],
+        ts: jt.Real[np.ndarray, ' nt']
     ) -> jt.Real[np.ndarray, 'k nt obs']:
 
         '''Compute time derivative of GPR mean function
@@ -355,8 +354,8 @@ class GCFMSamplerBase(IterableDataset):
 
     def _compute_mu_t_aug_prime(
         self,
-        refidxs: jt.Int[np.ndarray, 'k'],
-        ts: jt.Real[np.ndarray, 'nt'],
+        refidxs: jt.Int[np.ndarray, ' k'],
+        ts: jt.Real[np.ndarray, ' nt'],
         mus: jt.Real[np.ndarray, 'k margidx dims']
     ) -> jt.Real[np.ndarray, 'k nt dims']:
         r'''Compute \mu_t_prime augmented with ref data
@@ -383,7 +382,7 @@ class GCFMSamplerBase(IterableDataset):
     ## All mixin methods, ordered by call order in __next__()
     ## Time Sampling Mixin Method Signatures
     @abstractmethod
-    def _sample_ts(self) -> jt.Float64[np.ndarray, 'nt']:
+    def _sample_ts(self) -> jt.Float64[np.ndarray, ' nt']:
         '''Samples batch of times using TimeMixin'''
         raise NotImplementedError
 
@@ -391,7 +390,7 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _enrich_ts(
         self,
-        ts: jt.Float64[np.ndarray, 'nt']
+        ts: jt.Float64[np.ndarray, ' nt']
     ) -> jt.Float64[np.ndarray, 'nt rff_dim*2']:
         ...
 
@@ -399,14 +398,14 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _enrich_ts(
         self,
-        ts: jt.Float64[np.ndarray, 'nt']
+        ts: jt.Float64[np.ndarray, ' nt']
     ) -> jt.Float64[np.ndarray, 'nt 1']:
         ...
 
     @abstractmethod
     def _enrich_ts(
         self,
-        ts: jt.Float64[np.ndarray, 'nt']
+        ts: jt.Float64[np.ndarray, ' nt']
     ) -> Times:
         raise NotImplementedError
 
@@ -414,7 +413,7 @@ class GCFMSamplerBase(IterableDataset):
     @abstractmethod
     def _compute_mu_t(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         mus: jt.Real[np.ndarray, 'k margidx dims'],
     ) -> jt.Real[np.ndarray, 'k nt dims']:
         raise NotImplementedError
@@ -423,7 +422,7 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _compute_sigma_t(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
     ) -> tuple[jt.Real[np.ndarray, 'k nt dims dims'], jt.Real[np.ndarray, 'k dims dims']]:
         ...
@@ -432,7 +431,7 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _compute_sigma_t(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
     ) -> tuple[float, None]:
         ...
@@ -441,15 +440,15 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _compute_sigma_t(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
-    ) -> tuple[jt.Real[np.ndarray, 'nt'], jt.Real[np.ndarray, 'nt']]:
+    ) -> tuple[jt.Real[np.ndarray, ' nt'], jt.Real[np.ndarray, ' nt']]:
         ...
 
     @abstractmethod
     def _compute_sigma_t(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
     ) -> tuple[Sigma_T, Aux]:
         raise NotImplementedError
@@ -458,7 +457,7 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _sample_xt(
         self,
-        refidxs: jt.Int[np.ndarray, 'k'],
+        refidxs: jt.Int[np.ndarray, ' k'],
         mu_t: jt.Real[np.ndarray, 'k nt dims'],
         Sigma_t: jt.Real[np.ndarray, 'k nt dims dims'],
         mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
@@ -471,7 +470,7 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _sample_xt(
         self,
-        refidxs: jt.Int[np.ndarray, 'k'],
+        refidxs: jt.Int[np.ndarray, ' k'],
         mu_t: jt.Real[np.ndarray, 'k nt dims'],
         Sigma_t: float,
         mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
@@ -484,9 +483,9 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _sample_xt(
         self,
-        refidxs: jt.Int[np.ndarray, 'k'],
+        refidxs: jt.Int[np.ndarray, ' k'],
         mu_t: jt.Real[np.ndarray, 'k nt dims'],
-        Sigma_t: jt.Real[np.ndarray, 'nt'],
+        Sigma_t: jt.Real[np.ndarray, ' nt'],
         mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
         sigma_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
         eps: jt.Real[np.ndarray, 'k b nt dims'],
@@ -496,7 +495,7 @@ class GCFMSamplerBase(IterableDataset):
     @abstractmethod
     def _sample_xt(
         self,
-        refidxs: jt.Int[np.ndarray, 'k'],
+        refidxs: jt.Int[np.ndarray, ' k'],
         mu_t: jt.Real[np.ndarray, 'k nt dims'],
         Sigma_t: Sigma_T,
         mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
@@ -509,7 +508,7 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _compute_A_t_prime_A_t_inv(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         aux: jt.Real[np.ndarray, 'k dims dims']
     ) -> jt.Real[np.ndarray, 'k nt dims dims']:
         ...
@@ -518,7 +517,7 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _compute_A_t_prime_A_t_inv(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         aux: None
     ) -> None:
         ...
@@ -527,15 +526,15 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _compute_A_t_prime_A_t_inv(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
-        aux: jt.Real[np.ndarray, 'nt']
-    ) -> jt.Real[np.ndarray, 'nt']:
+        ts: jt.Real[np.ndarray, ' nt'],
+        aux: jt.Real[np.ndarray, ' nt']
+    ) -> jt.Real[np.ndarray, ' nt']:
         ...
 
     @abstractmethod
     def _compute_A_t_prime_A_t_inv(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         aux: Aux
     ) -> A_T_Prime_A_T_Inv:
         raise NotImplementedError
@@ -566,7 +565,7 @@ class GCFMSamplerBase(IterableDataset):
         self,
         xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
         mu_t_prime: jt.Real[np.ndarray, 'k nt dims'],
-        A_t_prime_A_t_inv: jt.Real[np.ndarray, 'nt']
+        A_t_prime_A_t_inv: jt.Real[np.ndarray, ' nt']
     ) -> jt.Real[np.ndarray, 'k b nt dims']:
         ...
 
@@ -584,7 +583,7 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _compute_lambda(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
     ) -> None:
         ...
@@ -593,7 +592,7 @@ class GCFMSamplerBase(IterableDataset):
     @overload
     def _compute_lambda(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
     ) -> jt.Float64[np.ndarray, 'k nt dims dims']:
         ...
@@ -601,7 +600,7 @@ class GCFMSamplerBase(IterableDataset):
     @abstractmethod
     def _compute_lambda(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
     ) -> jt.Float64[np.ndarray, 'k nt dims dims'] | None:
         raise NotImplementedError
@@ -667,14 +666,14 @@ class GCFMSamplerBase(IterableDataset):
 class UniformTimeMixin:
     '''Samples batch of times from Unif(0, 1)'''
 
-    def _sample_ts(self) -> jt.Float64[np.ndarray, 'nt']:
+    def _sample_ts(self) -> jt.Float64[np.ndarray, ' nt']:
         return self.prng.random(size=self.nt)
 
 
 class BetaTimeMixin:
     '''Samples batch of times from Beta(a, a)'''
 
-    def _sample_ts(self) -> jt.Float64[np.ndarray, 'nt']:
+    def _sample_ts(self) -> jt.Float64[np.ndarray, ' nt']:
         return self.prng.beta(self.beta_a, self.beta_a, size=self.nt)
 
 
@@ -691,7 +690,7 @@ class TimeRFFMixin:
 
     def _enrich_ts(
         self,
-        ts: jt.Float64[np.ndarray, 'nt']
+        ts: jt.Float64[np.ndarray, ' nt']
     ) -> jt.Float64[np.ndarray, 'nt rff_dim*2']:
         Bt = self.B * ts[:, None]  ## (nt, rff_dim)
         cosBt = np.cos(Bt)
@@ -704,7 +703,7 @@ class TimeNoEnrichMixin:
 
     def _enrich_ts(
         self,
-        ts: jt.Float64[np.ndarray, 'nt']
+        ts: jt.Float64[np.ndarray, ' nt']
     ) -> jt.Float64[np.ndarray, 'nt 1']:
         return ts[:, None]
 
@@ -718,7 +717,7 @@ class AFMixin:
 
     def _compute_mu_t(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         mus: jt.Real[np.ndarray, 'k margidx dims'],
     ) -> jt.Real[np.ndarray, 'k nt dims']:
         r'''Compute mu_t for W2 geodesic between MVNs
@@ -729,7 +728,7 @@ class AFMixin:
 
     def _compute_sigma_t(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
     ) -> tuple[jt.Real[np.ndarray, 'k nt dims dims'], jt.Real[np.ndarray, 'k dims dims']]:
         r'''Compute Sigma_t for W2 geodesic between MVNs
@@ -746,14 +745,14 @@ class AFMixin:
         Sigma_101 += np.eye(Sigma_101.shape[-1])[None, ...] * self.reg
         Sigma_101_inv_sqrt = batch_inv_sqrtm(Sigma_101)
         C = Sigma_1_sqrt @ Sigma_101_inv_sqrt @ Sigma_1_sqrt  ## (k, dims, dims)
-        I = np.eye(C.shape[-1])[None, ...]                    ## (1, dims, dims)
+        I = np.eye(C.shape[-1])[None, ...]                    ## (1, dims, dims)  # noqa: E741
         C_t = batch_interp(I, C, ts)                          ## (k, nt, dims, dims)
         Sigma_t = C_t @ covs[:, 0][:, None] @ C_t             ## (k, nt, dims, dims)
         return Sigma_t, C
 
     def _sample_xt(
         self,
-        refidxs: jt.Int[np.ndarray, 'k'],
+        refidxs: jt.Int[np.ndarray, ' k'],
         mu_t: jt.Real[np.ndarray, 'k nt dims'],
         Sigma_t: jt.Real[np.ndarray, 'k nt dims dims'],
         mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
@@ -794,6 +793,7 @@ class AFMixin:
         ## Sample xt_hid|obs
         ## xt_hid vars have nonzero covariance
         xt_hid = np.matvec(cond_A_t[:, None], eps[:, :, :, self.hidmask]) ## (k, b, nt, hid)
+        xt_hid += cond_mu_t
 
         xt[:, :, :, self.obsmask] = xt_obs
         xt[:, :, :, self.hidmask] = xt_hid
@@ -801,7 +801,7 @@ class AFMixin:
 
     def _compute_A_t_prime_A_t_inv(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         aux: jt.Real[np.ndarray, 'k dims dims']
     ) -> jt.Real[np.ndarray, 'k nt dims dims']:
         r'''Compute A_t_prime @ A_t_inv for A_t A_t^T = Sigma_t
@@ -821,7 +821,7 @@ class AFMixin:
 
         C_t^{-1} = Q_C (t \Lambda_C + (1 - t)I)^{-1} Q_C^{-1}
         '''
-        I = np.eye(self.dim)
+        I = np.eye(self.dim)  # noqa: E741
         C = aux
         C_t_prime = C - I[None, ...]
 
@@ -851,7 +851,7 @@ class IFCBMixin:
 
     def _compute_mu_t(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         mus: jt.Real[np.ndarray, 'k margidx dims'],
     ) -> jt.Real[np.ndarray, 'k nt dims']:
         '''Compute mu_t of constant bridge'''
@@ -859,7 +859,7 @@ class IFCBMixin:
 
     def _compute_sigma_t(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
     ) -> tuple[float, None]:
         '''Compute sigma_t of constant bridge
@@ -871,7 +871,7 @@ class IFCBMixin:
 
     def _sample_xt(
         self,
-        refidxs: jt.Int[np.ndarray, 'k'],
+        refidxs: jt.Int[np.ndarray, ' k'],
         mu_t: jt.Real[np.ndarray, 'k nt dims'],
         Sigma_t: float,
         mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
@@ -887,7 +887,6 @@ class IFCBMixin:
         '''
         del refidxs, sigma_t_gpr
 
-        k = mu_t.shape[0]
         xt = np.zeros_like(eps)
         sigma_eps = Sigma_t * eps
         xt[:, :, :, self.obsmask] = sigma_eps[:, :, :, self.obsmask] \
@@ -898,7 +897,7 @@ class IFCBMixin:
 
     def _compute_A_t_prime_A_t_inv(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         aux: None,
     ) -> None:
         '''Compute sigma_t_prime * sigma_t_inv
@@ -936,7 +935,7 @@ class IFSBMixin:
 
     def _compute_mu_t(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         mus: jt.Real[np.ndarray, 'k margidx dims'],
     ) -> jt.Real[np.ndarray, 'k nt dims']:
         '''Compute mu_t of Schrodinger bridge'''
@@ -944,9 +943,9 @@ class IFSBMixin:
 
     def _compute_sigma_t(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
-    ) -> tuple[jt.Real[np.ndarray, 'nt'], jt.Real[np.ndarray, 'nt']]:
+    ) -> tuple[jt.Real[np.ndarray, ' nt'], jt.Real[np.ndarray, ' nt']]:
         '''Compute sigma_t of Schrodinger bridge
 
         sigma_t = sigma * sqrt(t * (1 - t))
@@ -962,9 +961,9 @@ class IFSBMixin:
 
     def _sample_xt(
         self,
-        refidxs: jt.Int[np.ndarray, 'k'],
+        refidxs: jt.Int[np.ndarray, ' k'],
         mu_t: jt.Real[np.ndarray, 'k nt dims'],
-        Sigma_t: jt.Real[np.ndarray, 'nt'],
+        Sigma_t: jt.Real[np.ndarray, ' nt'],
         mu_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
         sigma_t_gpr: jt.Real[np.ndarray, 'k nt obs'],
         eps: jt.Real[np.ndarray, 'k b nt dims'],
@@ -978,7 +977,6 @@ class IFSBMixin:
         '''
         del refidxs, sigma_t_gpr
 
-        k = mu_t.shape[0]
         xt = np.zeros_like(eps)
         sigma_eps = Sigma_t[None, None, :, None] * eps
         xt[:, :, :, self.obsmask] = sigma_eps[:, :, :, self.obsmask] \
@@ -989,9 +987,9 @@ class IFSBMixin:
 
     def _compute_A_t_prime_A_t_inv(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
-        aux: jt.Real[np.ndarray, 'nt']
-    ) -> jt.Real[np.ndarray, 'nt']:
+        ts: jt.Real[np.ndarray, ' nt'],
+        aux: jt.Real[np.ndarray, ' nt']
+    ) -> jt.Real[np.ndarray, ' nt']:
         '''Compute sigma_t_prime * sigma_t_inv
 
         sigma_t = sigma * sqrt(t * (1 - t))
@@ -1006,7 +1004,7 @@ class IFSBMixin:
         self,
         xt_diff: jt.Real[np.ndarray, 'k b nt dims'],
         mu_t_prime: jt.Real[np.ndarray, 'k nt dims'],
-        A_t_prime_A_t_inv: jt.Real[np.ndarray, 'nt']
+        A_t_prime_A_t_inv: jt.Real[np.ndarray, ' nt']
     ) -> jt.Real[np.ndarray, 'k b nt dims']:
         '''Compute ut = sigma_t_prime * sigma_t_inv (xt - mu_t) + mu_t_prime'''
         Ax = A_t_prime_A_t_inv[None, None, :, None] * xt_diff
@@ -1024,7 +1022,7 @@ class ASMixin:
 
     def _compute_lambda(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
     ) -> jt.Float64[np.ndarray, 'k nt dims dims']:
         '''Compute lambda for stable scaled score loss
@@ -1043,7 +1041,7 @@ class ASMixin:
         Sigma_101 += np.eye(Sigma_101.shape[-1])[None, ...] * self.reg
         Sigma_101_inv_sqrt = batch_inv_sqrtm(Sigma_101)
         C = Sigma_1_sqrt @ Sigma_101_inv_sqrt @ Sigma_1_sqrt  ## (k, dims, dims)
-        I = np.eye(C.shape[-1])[None, ...]                    ## (1, dims, dims)
+        I = np.eye(C.shape[-1])[None, ...]                    ## (1, dims, dims)  # noqa: E741
         C_t = batch_interp(I, C, ts)                          ## (k, nt, dims, dims)
         Sigma_t = C_t @ covs[:, 0][:, None] @ C_t             ## (k, nt, dims, dims)
         ## Regularize to avoid bad matrix
@@ -1056,7 +1054,7 @@ class NSMixin:
 
     def _compute_lambda(
         self,
-        ts: jt.Real[np.ndarray, 'nt'],
+        ts: jt.Real[np.ndarray, ' nt'],
         covs: jt.Real[np.ndarray, 'k margidx dims dims']
     ) -> None:
         return None
@@ -1112,7 +1110,6 @@ def build_sampler_class(
 
 
 def main() -> None:
-    import matplotlib.pyplot as plt
     from torch.utils.data import DataLoader
 
     from trajaugcfm.constants import (
@@ -1136,7 +1133,6 @@ def main() -> None:
     obsmask = np.zeros(data.shape[-1], dtype=bool)
     obsidxs = [0, 1, 2]
     obsmask[obsidxs] = True
-    hidmask = ~obsmask
     tidxs = [0, 400]
     # _nsplit = 250
     _nsplit = 50

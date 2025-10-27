@@ -5,12 +5,6 @@ import jaxtyping as jt
 import numpy as np
 import torch
 
-from trajaugcfm.constants import (
-    CONSTOBS,
-    DYNOBS,
-    OBS
-)
-
 
 def build_indexer(
     allvars: Sequence[str],
@@ -29,7 +23,7 @@ def build_indexer(
 def roundrobin_split_idxs(
     N: int,
     nfenceposts: int,
-) -> jt.Int[np.ndarray, 'nfenceposts']:
+) -> jt.Int[np.ndarray, ' nfenceposts']:
     '''Return nfenceposts evenly spaced indices from 0 to N-1'''
     fps = [tmp.shape[0] for tmp in np.array_split(np.arange(N), nfenceposts-1)]
     fps[0] -= 1
@@ -40,7 +34,7 @@ def roundrobin_split_idxs(
 def batch_interp(
     a: jt.Real[np.ndarray, '#batch *dims'],
     b: jt.Real[np.ndarray, '#batch *dims'],
-    t: jt.Real[np.ndarray, 'times']
+    t: jt.Real[np.ndarray, ' times']
 ) -> jt.Real[np.ndarray, 'batch times *dims']:
     '''Interpolates a batch from a to b assuming t from 0 to 1'''
     t_broadcast = t[None, :, *(None for _ in range(a.ndim-1))]  ## 1 times ...1

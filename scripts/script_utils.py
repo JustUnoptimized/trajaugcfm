@@ -1,3 +1,4 @@
+from argparse import ArgumentTypeError
 from collections.abc import Callable, Iterator
 from functools import wraps
 import json
@@ -48,11 +49,11 @@ def int_or_float(x: str) -> int | float:
     '''Convert to int with fallback to float'''
     try:
         return int(x)
-    except:
+    except ValueError:
         try:
             return float(x)
         except ValueError:
-            raise argparse.ArgumentTypeError(
+            raise ArgumentTypeError(
                 f'Could not convert {x} to a int or float'
             )
 
@@ -120,8 +121,8 @@ def scale_data(
     data_train_refs: jt.Real[np.ndarray, 'Ntrain T dim'],
     data_val_snapshots: jt.Real[np.ndarray, 'Nval margidx dim'],
     data_val_refs: jt.Real[np.ndarray, 'Nval T dim'],
-    obsmask: jt.Bool[np.ndarray, 'dim'],
-    hidmask: jt.Bool[np.ndarray, 'dim'],
+    obsmask: jt.Bool[np.ndarray, ' dim'],
+    hidmask: jt.Bool[np.ndarray, ' dim'],
 ) -> tuple[Unpack[ScaledData], StandardScaler, StandardScaler]:
     dobs = obsmask.sum()
     dhid = hidmask.sum()
@@ -151,8 +152,8 @@ def scale_data_with_scalers(
     data_train_refs: jt.Real[np.ndarray, 'Ntrain T dim'],
     data_val_snapshots: jt.Real[np.ndarray, 'Nval margidx dim'],
     data_val_refs: jt.Real[np.ndarray, 'Nval T dim'],
-    obsmask: jt.Bool[np.ndarray, 'dim'],
-    hidmask: jt.Bool[np.ndarray, 'dim'],
+    obsmask: jt.Bool[np.ndarray, ' dim'],
+    hidmask: jt.Bool[np.ndarray, ' dim'],
     obs_scaler: StandardScaler,
     hid_scaler: StandardScaler
 ) -> ScaledData:
@@ -214,7 +215,7 @@ def exitcodewrapper(f: Callable[..., None]) -> Callable[..., None]:
         try:
             f(*args, **kwargs)
             sys.exit(0)
-        except Exception as e:
+        except Exception:
             traceback.print_exc(file=sys.stderr)
             sys.exit(1)
     return wrapper

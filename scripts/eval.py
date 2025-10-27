@@ -1,8 +1,7 @@
 import argparse
 import json
 import os
-from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Literal
 
 import jaxtyping as jt
 import numpy as np
@@ -12,27 +11,16 @@ from sklearn.model_selection import train_test_split
 from tqdm import trange
 
 from trajaugcfm.constants import (
-    BASEDIR,
-    DATADIR,
     RESDIR,
-    CONSTOBS,
-    DYNOBS,
-    OBS,
 )
 
-from trajaugcfm.utils import (
-    build_indexer,
-)
 from script_utils import (
-    METRICS_FILENAME,
-    MODEL_FILENAME,
     TRAINARGS_FILENAME,
     TRAJGENARGS_FILENAME,
     TRAJGEN_FILENAME,
     EVALARGS_FILENAME,
     EVALS_FILENAME,
     exitcodewrapper,
-    int_or_float,
     load_args,
     load_data,
     load_scalers,
@@ -113,7 +101,7 @@ def compute_distribution_metrics(
     yhat: jt.Float64[np.ndarray, 'N T d'],
     reg: float,
     method: Literal['sinkhorn', 'sinkhorn_log', 'sinkhorn_stabilized'],
-) -> dict[str, jt.Float64[np.ndarray, 'T']]:
+) -> dict[str, jt.Float64[np.ndarray, ' T']]:
     '''Compute distributional distance metrics over y and yhat.
 
     y is the ground truth trajectory.
@@ -162,9 +150,6 @@ def main() -> None:
     obsmask[exp_args.obsidxs] = True
     hidmask = ~obsmask
     tidxs = [0, -1]
-    dobs = obsmask.sum()
-    dhid = hidmask.sum()
-    d = dobs + dhid
 
     print('\nSplitting into train-val sets for snapshots and references')
     data_train, data_val = train_test_split(
@@ -186,7 +171,6 @@ def main() -> None:
         data_val, test_size=exp_args.refsize,
         random_state=exp_args.seed if exp_args.seed is None else exp_args.seed+4
     )
-    data_val_refs_hid = data_val_refs[:, :, hidmask]
     data_val_refs = data_val_refs[:, :, obsmask]
     print('data val snapshots shape', data_val_snapshots.shape)
     print('data val refs shape', data_val_refs.shape)

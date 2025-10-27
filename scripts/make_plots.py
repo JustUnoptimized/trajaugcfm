@@ -8,29 +8,20 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
 from numpy.lib.npyio import NpzFile
-import pandas as pd
 import seaborn as sns
 from sklearn.model_selection import train_test_split
 
 from trajaugcfm.constants import (
-    CONSTOBS,
-    DYNOBS,
     RESDIR,
-    OBS,
-)
-from trajaugcfm.utils import (
-    build_indexer
 )
 
 from script_utils import (
     EVALARGS_FILENAME,
     EVALS_FILENAME,
     LOSSES_FILENAME,
-    MODEL_FILENAME,
     PLOTARGS_FILENAME,
     TRAINARGS_FILENAME,
     TRAJGEN_FILENAME,
-    TRAJGENARGS_FILENAME,
     exitcodewrapper,
     int_or_float,
     load_args,
@@ -144,9 +135,9 @@ def plot_training(
     score: bool,
     train_flow_losses: jt.Real[np.ndarray, 'epochs nsteps'],
     train_score_losses: jt.Real[np.ndarray, 'epochs nsteps'] | None,
-    val_flow_losses: jt.Real[np.ndarray, 'nvals'],
-    val_score_losses: jt.Real[np.ndarray, 'nvals'] | None,
-    lrs: jt.Real[np.ndarray, 'epochs'],
+    val_flow_losses: jt.Real[np.ndarray, ' nvals'],
+    val_score_losses: jt.Real[np.ndarray, ' nvals'] | None,
+    lrs: jt.Real[np.ndarray, ' epochs'],
     ax_w: int | float,
     ax_h: int | float,
     expname: str,
@@ -193,7 +184,7 @@ def plot_training(
 
 
 def plot_true_trajs(
-    obsmask: jt.Bool[np.ndarray, 'd'],
+    obsmask: jt.Bool[np.ndarray, ' d'],
     refs: jt.Float64[np.ndarray, 'N T o'] | None,
     refs_hid: jt.Float64[np.ndarray, 'N T d-o'] | None,
     nrefs: int,
@@ -252,7 +243,7 @@ def plot_true_trajs(
 
 def plot_trajs(
     trajs: jt.Float64[np.ndarray, 'N T d'],
-    obsmask: jt.Bool[np.ndarray, 'd'] | None,
+    obsmask: jt.Bool[np.ndarray, ' d'] | None,
     refs: jt.Float64[np.ndarray, 'N T o'] | None,
     refs_hid: jt.Float64[np.ndarray, 'N T d-o'] | None,
     nrefs: int,
@@ -375,7 +366,7 @@ def plot_evals(
         elif arr.ndim == 3:
             feature_metrics.append(name)
         else:
-            raise ValueError(f'Metric array with ndim > 3 is unhandled')
+            raise ValueError('Metric array with ndim > 3 is unhandled')
 
     ## Plot pointwise metrics
     nrows, r = divmod(len(pointwise_metrics), metric_ncols)
@@ -477,7 +468,6 @@ def main() -> None:
     args = parse_args()
     args = chk_fmt_args(args)
     exp_args = load_args(args.expname, TRAINARGS_FILENAME)
-    inf_args = load_args(args.expname, TRAJGENARGS_FILENAME)
     eval_args = load_args(args.expname, EVALARGS_FILENAME)
     save_plot_args(args, args.expname)
 
@@ -488,9 +478,6 @@ def main() -> None:
     obsmask[exp_args.obsidxs] = True
     hidmask = ~obsmask
     tidxs = [0, -1]
-    dobs = obsmask.sum()
-    dhid = hidmask.sum()
-    d = dobs + dhid
 
     print('\nSplitting into train-val sets for snapshots and references')
     data_train, data_val = train_test_split(
@@ -542,7 +529,7 @@ def main() -> None:
         hid_scaler,
     )
     data_val_refs_hid_scaled = hid_scaler.transform(
-        data_val_refs_hid.reshape((-1, dhid))
+        data_val_refs_hid.reshape((-1, hidmask.sum()))
     ).reshape(data_val_refs_hid.shape)
 
     ## Training Plots

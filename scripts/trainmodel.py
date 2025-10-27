@@ -6,16 +6,12 @@ import pickle
 import jaxtyping as jt
 import numpy as np
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
 import torch
 from torch.utils.data import DataLoader
 
 from trajaugcfm.constants import (
     DATADIR,
     RESDIR,
-    OBS,
-    CONSTOBS,
-    DYNOBS,
     IDX2RCMC_SAVENAME
 )
 from trajaugcfm.models import (
@@ -24,9 +20,6 @@ from trajaugcfm.models import (
     flowscore_wrapper
 )
 from trajaugcfm.sampler import build_sampler_class
-from trajaugcfm.utils import (
-    build_indexer,
-)
 from script_utils import (
     MODEL_FILENAME,
     TRAINARGS_FILENAME,
@@ -342,9 +335,9 @@ def save_train_metrics(
     score: bool,
     train_flow_losses: jt.Real[np.ndarray, 'epochs nsteps'],
     train_score_losses: jt.Real[np.ndarray, 'epochs nsteps'] | None,
-    val_flow_losses: jt.Real[np.ndarray, 'nvals'],
-    val_score_losses: jt.Real[np.ndarray, 'nvals'] | None,
-    lrs: jt.Real[np.ndarray, 'epochs']
+    val_flow_losses: jt.Real[np.ndarray, ' nvals'],
+    val_score_losses: jt.Real[np.ndarray, ' nvals'] | None,
+    lrs: jt.Real[np.ndarray, ' epochs']
 ) -> None:
     if score:
         np.savez(
@@ -377,9 +370,6 @@ def main() -> None:
     obsmask[args.obsidxs] = True
     hidmask = ~obsmask
     tidxs = [0, -1]
-    dobs = obsmask.sum()
-    dhid = hidmask.sum()
-    d = dobs + dhid
 
     print('\nSplitting into train-val sets for snapshots and references')
     data_train, data_val = train_test_split(
