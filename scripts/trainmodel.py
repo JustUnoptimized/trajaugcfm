@@ -123,6 +123,11 @@ def parse_args() -> argparse.Namespace:
             +' Ignored if flow is anisotropic.'
     )
     flowgroup.add_argument(
+        '--cc-impute', action='store_true',
+        help='Impute cross-covariance between obs and hid features.' \
+            +' Otherwise, set cross-covariance to 0.'
+    )
+    flowgroup.add_argument(
         '--sigma', type=float, default=1.0,
         help='Scale for variance schedule. Ignored if using anisotropic flow.'
     )
@@ -130,6 +135,18 @@ def parse_args() -> argparse.Namespace:
         '--sb-reg', type=float, default=1e-8,
         help='Regularization when computing sigma_t_prime / sigma_t_inv.' \
             +' Only used for isotropic flow, schrodinger bridge.'
+    )
+    flowgroup.add_argument(
+        '--delta', type=float, default=0.01,
+        help='Time delta used in finite (central) difference for derivative estimation'
+    )
+    flowgroup.add_argument(
+        '--tau', type=float, default=1.0,
+        help='Temperature for soft spectral weighting'
+    )
+    flowgroup.add_argument(
+        '--spectral', type=str, choices=['maxgain', 'robust'], default='maxgain',
+        help='Strategy for soft spectral filtering'
     )
 
     scoregroup = parser.add_argument_group('score', 'score matcher args')
@@ -236,6 +253,10 @@ def parse_args() -> argparse.Namespace:
         '--seed', type=int, default=None,
         help='Seed for random number generators and reproducability'
     )
+    miscgroup.add_argument(
+        '--diagnostics', action='store_true',
+        help='Log internal computations and sampling state'
+    )
 
     ## Diagnostics
     # diaggroup = parser.add_argument_group('diagnostics', 'logging and instrumentation')
@@ -283,6 +304,8 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     ## flowgroup check
     assert args.sigma >= 0, f'sigma must be non-negative but got {args.sigma}'
     assert args.sb_reg > 0, f'sb_reg must be positive but got {args.sb_reg}'
+    assert args.delta > 0, f'delta must be positive but got {args.delta}'
+    assert args.tau > 0, f'tau must be positive but got {args.tau}'
 
     ## samplergroup check
     assert args.k > 0, f'k must be positive but got {args.k}'
@@ -399,7 +422,7 @@ def main() -> None:
     print('\nScaling data using train split...')
     (
         data_train_snapshots_scaled,
-        data_train_refs_scaled, 
+        data_train_refs_scaled,
         data_val_snapshots_scaled,
         data_val_refs_scaled,
         obs_scaler,
@@ -439,18 +462,23 @@ def main() -> None:
         args.n,
         args.b,
         args.nt,
+        delta=args.delta,
         rbfk_scale=args.gprscale,
         rbfk_bounds=args.gprbounds,
         whitenoise=args.whitenoise,
         gpr_nt=args.gprnt,
         rbfd_scale=args.rbfdistscale,
+        cc_impute=args.cc_impute,
         reg=args.reg,
         sigma=args.sigma,
         sb_reg=args.sb_reg,
+        tau=args.tau,
+        spectral=args.spectral,
         beta_a=args.beta_a,
         rff_seed=args.rff_seed,
         rff_scale=args.rff_scale,
         rff_dim=args.rff_dim,
+        diagnostics=args.diagnostics
     )
     val_sampler = GCFMSampler(
         np.random.default_rng(seed=args.seed if args.seed is None else args.seed+1),
@@ -462,18 +490,23 @@ def main() -> None:
         args.n,
         args.b,
         args.nt,
+        delta=args.delta,
         rbfk_scale=args.gprscale,
         rbfk_bounds=args.gprbounds,
         whitenoise=args.whitenoise,
         gpr_nt=args.gprnt,
         rbfd_scale=args.rbfdistscale,
+        cc_impute=args.cc_impute,
         reg=args.reg,
         sigma=args.sigma,
         sb_reg=args.sb_reg,
+        tau=args.tau,
+        spectral=args.spectral,
         beta_a=args.beta_a,
         rff_seed=args.rff_seed,
         rff_scale=args.rff_scale,
         rff_dim=args.rff_dim,
+        diagnostics=args.diagnostics
     )
     train_loader = DataLoader(train_sampler, batch_size=None)
     val_loader = DataLoader(val_sampler, batch_size=None)
@@ -535,6 +568,15 @@ def main() -> None:
         val_score_losses,
         lrs
     )
+
+    if args.diagnostics:
+        print('\nSaving diagnostics...')
+        for sampler, name in zip([train_sampler, val_sampler], ['train', 'val']):
+            logsdict = sampler.get_logs()
+            np.savez(
+                os.path.join(args.expname, f'{name}_logs.npz'),
+                **logsdict
+            )
 
 
 if __name__ == '__main__':

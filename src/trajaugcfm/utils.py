@@ -3,6 +3,7 @@ from functools import reduce
 
 import jaxtyping as jt
 import numpy as np
+from scipy.linalg import cho_factor, cho_solve
 import torch
 
 
@@ -55,7 +56,10 @@ def batch_eigval_replace_neg(
     L: jt.Real[np.ndarray, '... n'],
     atol: float=1e-10
 ) -> jt.Real[np.ndarray, '... n']:
-    '''Replaces negative eigvals with smallest postive eigval'''
+    '''Replaces negative eigvals with smallest postive eigval.
+
+    This function assumes eigvals L is sorted in ASCending order.
+    '''
     pos_mask = L > atol
     neg_mask = ~pos_mask
     pos_idx = np.argmax(pos_mask, axis=-1, keepdims=True)
@@ -107,3 +111,45 @@ def torch_bmv(
     '''
     return (A @ x.unsqueeze(-1)).squeeze(-1)
 
+
+def schur_comp(
+    M: jt.Real[np.ndarray, '... n n'],
+    Aidx: jt.Bool[np.ndarray, ' n'],
+    alpha: jt.Real[np.ndarray, '...']
+) -> jt.Real[np.ndarray, '... h h']:
+    '''Returns (alpha-scaled) Schur complement of M / A.
+
+    M is a block matrix with shape [[A B], [C D]].
+    Aidx is a boolean mask of the idxs defining the A block matrix.
+    The resulting A must be invertible.
+    Alpha is a scaling factor on B and C.
+
+    M / A = D - alpha**2 * (C @ A^{-1} @ B)
+
+    If alpha = 1, returns the d
+    '''
+    Didx = ~Aidx
+    A = M[..., *np.ix_(Aidx, Aidx)]
+    B = M[..., *np.ix_(Aidx, Didx)]
+    C = M[..., *np.ix_(Didx, Aidx)]
+    D = M[..., *np.ix_(Didx, Didx)]
+
+    A_cho, lower = cho_factor(A)
+    A_inv = cho_solve((A_cho, lower), np.eye(A.shape[-1]))
+
+    return D - ((alpha ** 2) * (C @ A_inv @ B))
+
+
+def np_sigmoid(z: jt.Real[np.ndarray, '*shape']) -> jt.Real[np.ndarray, '*shape']:
+    '''Computes element-wise sigmoid of arbitrary array z.
+
+    This implementation uses the "safe" computation to avoid
+    numerical instability with the exponential function.
+    '''
+    p = np.empty_like(z)
+    pos = z >= 0
+    neg = ~pos
+    p[pos] = 1 / (1 + np.exp(-z[pos]))
+    ez = np.exp(z[neg])
+    p[neg] = ez / (ez + 1)
+    return p

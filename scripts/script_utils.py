@@ -186,7 +186,7 @@ def scale_data_with_scalers(
     ## only here to use packing/unpacking to keep line lengths short
     scaled_data = (
         data_train_snapshots_scaled,
-        data_train_refs_scaled, 
+        data_train_refs_scaled,
         data_val_snapshots_scaled,
         data_val_refs_scaled
     )

@@ -2,17 +2,24 @@ import argparse
 from collections.abc import Sequence
 import json
 import os
+import sys
+from typing import Literal
 
 import jaxtyping as jt
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+from matplotlib import colors as mcolors
 import numpy as np
 from numpy.lib.npyio import NpzFile
+import pandas as pd
 import seaborn as sns
 from sklearn.model_selection import train_test_split
 
 from trajaugcfm.constants import (
     RESDIR,
+)
+from trajaugcfm.utils import (
+    np_sigmoid,
 )
 
 from script_utils import (
@@ -29,6 +36,8 @@ from script_utils import (
     load_scalers,
     scale_data_with_scalers,
 )
+
+type RealNumeric = int | float
 
 
 def parse_args() -> argparse.Namespace:
@@ -75,6 +84,34 @@ def parse_args() -> argparse.Namespace:
             +' Set to -1 to plot all inferred trajs.'
     )
 
+    ## Diagnostics plotting arguments. Ignored if diagnostics is not set in trainmodel.py
+    diaggroup = parser.add_argument_group('diagnostics', 'diagnostics plotting args')
+    diaggroup.add_argument(
+        '--interval', type=int, default=2000,
+        help='Take every this for plotting eigvals and spectral scores.' \
+            + ' Set to 1 to plot all times.'
+    )
+    diaggroup.add_argument(
+        '--ema-alpha', type=float, default=0.2,
+        help='Exponential Moving Average alpha value for eigvals and spectral scores.'
+    )
+    diaggroup.add_argument(
+        '--ntbins', type=int, default=100,
+        help='Number of bins for aggregating times for heatmap plotting.'
+    )
+    diaggroup.add_argument(
+        '--nxbins', type=int, default=200,
+        help='Number of bins for aggregating values for heatmap plotting.'
+    )
+    diaggroup.add_argument(
+        '--ticks-interval', type=int, default=10,
+        help='Take every this for displaying x- and y-axis ticks on heatmaps.'
+    )
+    diaggroup.add_argument(
+        '--highlight-interval', type=int, default=100,
+        help='Highlights (1 / highlight_interval) % of points in scatter plot'
+    )
+
     evalgroup = parser.add_argument_group('eval', 'evaluation plotting args')
     evalgroup.add_argument(
         '--nevals', type=int, default=20,
@@ -102,6 +139,21 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
         f'nrefs must be positive or -1 but got {args.nrefs}'
     assert args.ntrajs > 0 or args.ntrajs == -1, \
         f'ntrajs must be positive or -1 but got {args.ntrajs}'
+
+    ## diaggroup check
+    assert args.interval > 0, \
+        f'interval must be a positive integer but got {args.interval}'
+    assert 0 < args.ema_alpha and args.ema_alpha < 1, \
+        f'ema-alpha must be in the range (0, 1) but got {args.ema_alpha}'
+    assert args.ntbins > 0, \
+        f'ntbins must be greater than 0 but got {args.ntbins}'
+    assert args.nxbins > 0, \
+        f'nxbins must be greater than 0 but got {args.nxbins}'
+    assert args.ticks_interval > 0, \
+        f'ticks-interval must be greater than 0 but got {args.ticks_interval}'
+    assert args.highlight_interval > 0, \
+        f'highlight-interval must be greater than 0 but got {args.highlight_interval}'
+
 
     ## evalgroup check
     assert args.nevals > 0 or args.nevals == -1, \
@@ -463,6 +515,286 @@ def plot_evals(
     plot_extensions(fig, expname, 'metric_plots_indiv', extensions)
 
 
+def batch_mean_reduce(
+    arr: jt.Real[np.ndarray, 'nepochs nrefs [nsamples] nt *datashape'],
+    idxs: jt.Int[np.ndarray, ' idxs'],
+    nsamples: bool=False
+) -> jt.Real[np.ndarray, 'nepochs nbatches nt *datashape']:
+    '''Un-batchifies array by reducing the batch with the mean.
+
+    arr has shape (nepochs, nrefs, [nsamples,] nt, *datashape)
+    where nrefs = sum_i k_i
+    and k_i == k_{i+j} with a possible exception that $k_last != k_{last-1}
+    if nrefs % k != 0
+
+    ex) nsamples is for subsamples within batch.
+        Only relevant currently for mu correction.
+    '''
+    arr = np.split(arr, indices_or_sections=idxs, axis=1)
+    klast = arr[-1].shape[1]
+    if klast == 0:
+        arr = arr[:-1]
+    nbatches = len(arr)
+    # take mean over k [and nsamples] then swap axis order to (epochs, nbatches, nt, *dims)
+    meanaxis = (1, 2) if nsamples else 1
+    return np.stack([arr[i].mean(axis=meanaxis) for i in range(nbatches)]).swapaxes(0, 1)
+
+
+def bin_by_ts(
+    ts: jt.Real[np.ndarray, ' N'],
+    xs: jt.Real[np.ndarray, 'N *datashape'],
+    ntbins: int=100,
+    nxbins: int=200,
+    tlim: tuple[RealNumeric, RealNumeric]=(0, 1),
+    xlim: tuple[RealNumeric, RealNumeric]=(-1, 1)
+) -> jt.Int[np.ndarray, 'nxbins ntbins *datashape']:
+    _, *datashape = xs.shape
+    tbins = np.linspace(*tlim, ntbins+1)
+    xbins = np.linspace(*xlim, nxbins+1)
+    tbinsidxs = np.searchsorted(tbins, ts, side='right') - 1
+    xbinsidxs = np.searchsorted(xbins, xs, side='right') - 1
+
+    # collect counts from bins. (Ab)use un/packing to handle arbitrary data ndim
+    counts = np.zeros((nxbins, ntbins, *datashape))
+    grids = np.meshgrid(*[np.arange(d) for d in datashape], indexing='ij')
+    expansion = [None for _ in range(len(datashape))]
+    adv_idx = (
+        xbinsidxs,
+        np.broadcast_to(tbinsidxs[:, *expansion], xs.shape),
+        *(np.broadcast_to(grid[None, ...], xs.shape) for grid in grids)
+    )
+    np.add.at(counts, adv_idx, 1)
+    return counts
+
+
+def simple_ema(
+    xs: jt.Real[np.ndarray, 'N *datashape'],
+    alpha: float
+) -> jt.Real[np.ndarray, 'N *datashape']:
+    '''Naive implementation of simple exponential moving average.
+
+    xs.shape[0] is assumed to be the moving dimension.
+    xs.shape[1:] is assumed to be all the features.
+    The EMA is computed element-wise on the features using the smoothing parameter alpha.
+    '''
+    revalpha = 1 - alpha
+    N, *_ = xs.shape
+    xs_ema = np.empty_like(xs)
+    xs_ema[0] = xs[0]
+    prev_xs_ema = xs[0]
+    for t in range(1, N):
+        xs_ema[t] = alpha * xs[t] + revalpha * prev_xs_ema
+        prev_xs_ema = xs_ema[t]
+    return xs_ema
+
+
+def plot_timeseries(
+    sorted_ts_flat: jt.Real[np.ndarray, 'N'],
+    sorted_timeseries_flat: jt.Real[np.ndarray, 'N d'],
+    interval: int,
+    ema_alpha: float,
+    ncols: int,
+    ax_w: int | float,
+    ax_h: int | float,
+    title: str,
+    timeseriesname: str,
+    figname: str,
+    expname: str,
+    extensions: Sequence[str]
+) -> None:
+    d = sorted_timeseries_flat.shape[-1]
+    nrows, r = divmod(d, ncols)
+    if r > 0:
+        nrows += 1
+    fig, axs = plt.subplots(
+        nrows=nrows,
+        ncols=ncols,
+        figsize=(ncols*ax_w, nrows*ax_h),
+        sharey=True,
+        squeeze=False
+    )
+    fig.suptitle(title)
+    fig.supxlabel('t')
+    for i in range(d):
+        ax = axs[*divmod(i, ncols)]
+        ax.set_title(rf'${timeseriesname}_{i+1}$')
+        ax.grid(visible=True, c='gray', alpha=0.3, linewidth=0.8)
+        ax.axhline(0, c='k', linewidth=0.8)
+        label1 = rf'${timeseriesname}_i$' if i == 0 else None
+        label2 = rf'EMA ${timeseriesname}_i$' if i == 0 else None
+        ax.plot(
+            sorted_ts_flat[::interval],
+            sorted_timeseries_flat[::interval, i],
+            alpha=0.5,
+            linestyle='-.',
+            label=label1
+        )
+        ax.plot(
+            sorted_ts_flat[::interval],
+            simple_ema(sorted_timeseries_flat[::interval, i], ema_alpha),
+            label=label2
+        )
+        if i == 0:
+            ax.legend(loc='upper left')
+
+    ## Turn off any unused axes
+    for i in range(d, nrows*ncols):
+        ax = axs[*divmod(i, ncols)]
+        ax.axis('off')
+
+    fig.tight_layout()
+    plot_extensions(fig, expname, figname, extensions)
+
+
+def plot_eigvecs(
+    sorted_ts_flat: jt.Real[np.ndarray, ' N'],
+    sorted_eigvecs_flat: jt.Real[np.ndarray, 'N d d'],
+    ntbins: int,
+    nxbins: int,
+    ticks_interval: int,
+    title: str,
+    figname: str,
+    expname: str,
+    extensions: Sequence[str]
+) -> None:
+    '''logs store eigvecs pre-oriented in spectral score order'''
+    d = sorted_eigvecs_flat.shape[-2]  # eigvecs are column vectors
+    xlim = (-1, 1)
+    ## bin values
+    eigvecs_binned = bin_by_ts(
+        sorted_ts_flat,
+        sorted_eigvecs_flat,
+        ntbins=ntbins,
+        nxbins=nxbins,
+        tlim=(0, 1),
+        xlim=xlim
+    )
+    eigvecs_density = eigvecs_binned / eigvecs_binned.sum(axis=(0, 1), keepdims=True)
+
+    ## plot components
+    ax_w = 6
+    ax_h = 6
+    fig, axs = plt.subplots(
+        nrows=d,
+        ncols=d,
+        figsize=(d*ax_w, d*ax_h),
+        squeeze=False
+    )
+    fig.suptitle(title, fontsize=20)
+    fig.supxlabel(r'$t$')
+    fig.supylabel(r'$v_{j}[i]$')
+    aspect = eigvecs_binned.shape[1] / eigvecs_binned.shape[0]
+    vmax = eigvecs_density.max()
+    for ii in range(d*d):
+        i, j = divmod(ii, d)  # i is for componentidx j is for vectoridx
+        ax = axs[i, j]
+        ax.set_title(rf'$v_{j}[{i}]$')
+        im = ax.imshow(
+            eigvecs_density[..., i, j],
+            origin='lower',
+            aspect=aspect,
+            vmin=0,
+            vmax=vmax,
+            cmap='viridis'
+        )
+        ax.set_xticks(
+            np.arange(ntbins+1)[::ticks_interval],
+            [f'{t:.2f}' for t in np.linspace(0, 1, ntbins+1)[::ticks_interval]]
+        )
+        ax.set_yticks(
+            np.arange(nxbins+1)[::ticks_interval],
+            [f'{x:.2f}' for x in np.linspace(*xlim, nxbins+1)[::ticks_interval]]
+        )
+    fig.tight_layout()
+    fig.subplots_adjust(left=0.07)
+    fig.colorbar(im, ax=axs, shrink=0.9, fraction=0.05, aspect=36, pad=0.03)
+    plot_extensions(fig, expname, figname, extensions)
+
+
+def plot_scatter_heatmap(
+    sorted_ts_flat: jt.Real[np.ndarray, ' N'],
+    sorted_timeseries_flat: jt.Real[np.ndarray, ' N'],
+    highlight_interval: int,
+    ntbins: int,
+    nxbins: int,
+    ax_w: int | float,
+    ax_h: int | float,
+    title: str,
+    ylabel: str,
+    figname: str,
+    expname: str,
+    extensions: Sequence[str]
+) -> None:
+    tlim = (0, 1)
+    xlim = (0, sorted_timeseries_flat.max() + sorted_timeseries_flat.std())
+    timeseries_history_binned = bin_by_ts(
+        sorted_ts_flat,
+        sorted_timeseries_flat,
+        ntbins=ntbins,
+        nxbins=nxbins,
+        tlim=tlim,
+        xlim=xlim
+    )
+    timeseries_history_density = timeseries_history_binned / timeseries_history_binned.sum()
+
+    fig, axs = plt.subplots(ncols=2, figsize=(2*ax_w, ax_h))
+    fig.suptitle(title)
+    fig.supxlabel(r'$t$')
+    fig.supylabel(ylabel, x=0.007)
+
+    axs[0].set_title('Scatter View')
+    axs[0].set_xlim(tlim)
+    axs[0].set_ylim(xlim)
+    axs[0].grid(visible=True, c='gray', alpha=0.3, linewidth=0.8)
+    axs[0].axhline(0, c='k', linewidth=0.8)
+    axs[0].scatter(
+        sorted_ts_flat,
+        sorted_timeseries_flat,
+        marker='.',
+        s=1,
+        c='tab:cyan',
+        label='All Points'
+    )
+    axs[0].scatter(
+        sorted_ts_flat[::highlight_interval],
+        sorted_timeseries_flat[::highlight_interval],
+        marker='.',
+        s=6,
+        c='tab:orange',
+        label='1% of points'
+    )
+    timeseries_mean_of_means = np.mean(sorted_timeseries_flat)
+    timeseries_median_of_means = np.median(sorted_timeseries_flat)
+    axs[0].axhline(
+        timeseries_mean_of_means,
+        c='tab:red',
+        linestyle='-',
+        label=f'Mean of Means = {timeseries_mean_of_means:.2f}'
+    )
+    axs[0].axhline(
+        timeseries_median_of_means,
+        c='tab:red',
+        linestyle='-.',
+        label=f'Median of Means = {timeseries_median_of_means:.2f}'
+    )
+    axs[0].legend(loc='upper right')
+
+    axs[1].set_title('Density Heatmap View')
+    vmax = timeseries_history_density.max()
+    im = axs[1].imshow(
+        timeseries_history_density,
+        aspect='auto',
+        origin='lower',
+        vmin=0,
+        vmax=vmax,
+        extent=[*tlim, *xlim],
+        cmap='viridis'
+    )
+    fig.tight_layout()
+    fig.colorbar(im, ax=axs, shrink=0.9, fraction=0.05, aspect=10, pad=0.02)
+    plot_extensions(fig, expname, figname, extensions)
+
+
 @exitcodewrapper
 def main() -> None:
     args = parse_args()
@@ -590,6 +922,247 @@ def main() -> None:
         args.expname,
         args.extensions,
     )
+
+    ## Logging plots
+    if exp_args.diagnostics:
+        for name in ['train', 'val']:
+            logs = np.load(os.path.join(args.expname, f'{name}_logs.npz'))
+            ## Sort and collect ts as reference times for all plots
+            sorted_ts_idxs = np.argsort(logs['ts_history_all'].flatten(), axis=-1)
+            sorted_ts_flat = logs['ts_history_all'].flatten()[sorted_ts_idxs]
+            N = sorted_ts_flat.shape[0]
+
+            ## Re-sort obs eigvals and spectral because they are in spectral order from logging
+            nobs = logs['eigvals_obs_history_all'].shape[-1]
+            sorted_obs_eigvals_flat = np.take_along_axis(
+                np.flip(
+                    np.sort(logs['eigvals_obs_history_all'], axis=-1),
+                    axis=-1
+                ).reshape((N, nobs)),
+                sorted_ts_idxs[:, None],
+                axis=0
+            )
+            # print('obs eigvals lims', sorted_obs_eigvals_flat.min(), sorted_obs_eigvals_flat.max())
+
+            eigvals_medians = np.median(logs['eigvals_obs_history_all'], axis=-1, keepdims=True)
+            lambda_bound = eigvals_medians * np.square(1 + np.sqrt(nobs / exp_args.k))
+            w = np_sigmoid((logs['eigvals_obs_history_all'] - lambda_bound) / exp_args.tau)
+
+            if exp_args.spectral == 'maxgain':
+                S = w / (logs['eigvals_obs_history_all'] + exp_args.reg)
+            else:
+                S = w * logs['eigvals_obs_history_all']
+            S_sorted_flat = np.take_along_axis(
+                np.flip(np.sort(S, axis=-1), axis=-1).reshape((N, nobs)),
+                sorted_ts_idxs[:, None],
+                axis=0
+            )
+
+            ## Reduce batch dimension of hid eigvals by mean value
+            nhid = logs['eigvals_hid_history_all'].shape[-1]
+            sorted_hid_eigvals_flat = np.take_along_axis(
+                batch_mean_reduce(
+                    logs['eigvals_hid_history_all'],
+                    logs['batch_split_idxs'],
+                    nsamples=False
+                ).reshape((N, nhid)),
+                sorted_ts_idxs[:, None],
+                axis=0
+            )
+
+            ## Only sort by time since eigvecs should be logged in spectral score order
+            sorted_obs_eigvecs_flat = np.take_along_axis(
+                logs['eigvecs_obs_history_all'].reshape((N, nobs, nobs)),
+                sorted_ts_idxs[..., None, None],
+                axis=0
+            )
+
+            ## Reduce batch mean dimension of hid eigvecs by mean value
+            sorted_hid_eigvecs_flat = np.take_along_axis(
+                batch_mean_reduce(
+                    logs['eigvecs_hid_history_all'],
+                    logs['batch_split_idxs'],
+                    nsamples=False
+                ).reshape((N, nhid, nhid)),
+                sorted_ts_idxs[:, None, None],
+                axis=0
+            )
+
+            ## Reduce batch mean and nsample dimensions of mu correction by mean value
+            sorted_mu_corrections_flat = batch_mean_reduce(
+                logs['mu_correction_history_all'],
+                logs['batch_split_idxs'],
+                nsamples=True
+            ).reshape(N)[sorted_ts_idxs]
+
+            ## Reduce batch mean dimension of gain by mean value
+            sorted_gains_flat = batch_mean_reduce(
+                logs['gain_history_all'],
+                logs['batch_split_idxs'],
+                nsamples=False
+            ).reshape(N)[sorted_ts_idxs]
+
+            try:
+                print(f'\nPlotting obs_eigvals_{name}...')
+                plot_timeseries(
+                    sorted_ts_flat,
+                    sorted_obs_eigvals_flat,
+                    args.interval,
+                    args.ema_alpha,
+                    args.feature_ncols,
+                    args.ax_w,
+                    args.ax_h,
+                    r'$\Lambda_{oo,t}$ every' + rf' {args.interval} t and EMA smoothing with $\alpha = {args.ema_alpha}$',
+                    r'\lambda',
+                    f'obs_eigvals_{name}',
+                    args.expname,
+                    args.extensions
+                )
+            except Exception as e:
+                msg = f'Exception occured while plotting obs_eigvals_{name}:\n' + str(e)
+                print(msg)
+                print(msg, file=sys.stderr)
+
+            try:
+                print(f'\nPlotting obs_eigvals_{name}^(-1)...')
+                plot_timeseries(
+                    sorted_ts_flat,
+                    1 / (sorted_obs_eigvals_flat + exp_args.reg),
+                    args.interval,
+                    args.ema_alpha,
+                    args.feature_ncols,
+                    args.ax_w,
+                    args.ax_h,
+                    r'$\Lambda_{oo,t}^{-1}$ every' + rf' {args.interval} t and EMA smoothing with $\alpha = {args.ema_alpha}$',
+                    r'\lambda',
+                    f'obs_eigvals_{name}_inv',
+                    args.expname,
+                    args.extensions
+                )
+            except Exception as e:
+                msg = f'Exception occured while plotting obs_eigvals_{name}_inf:\n' + str(e)
+                print(msg)
+                print(msg, file=sys.stderr)
+
+            try:
+                print(f'\nPlotting hid_eigvals_{name}...')
+                plot_timeseries(
+                    sorted_ts_flat,
+                    sorted_hid_eigvals_flat,
+                    args.interval,
+                    args.ema_alpha,
+                    args.feature_ncols,
+                    args.ax_w,
+                    args.ax_h,
+                    r'$\Lambda_{hh,t}$ every' + rf' {args.interval} t and EMA smoothing with $\alpha = {args.ema_alpha}$',
+                    r'\lambda',
+                    f'hid_eigvals_{name}',
+                    args.expname,
+                    args.extensions
+                )
+            except Exception as e:
+                msg = f'Exception occured while plotting hid_eigvals_{name}:\n' + str(e)
+                print(msg)
+                print(msg, file=sys.stderr)
+
+            try:
+                print(f'\nPlotting obs_spectral_{exp_args.spectral}_{name}...')
+                plot_timeseries(
+                    sorted_ts_flat,
+                    S_sorted_flat,
+                    args.interval,
+                    args.ema_alpha,
+                    args.feature_ncols,
+                    args.ax_w,
+                    args.ax_h,
+                    r'$S_\text{' + f'{exp_args.spectral}' + r'}$ every' + rf' {args.interval} t and EMA smoothing with $\alpha = {args.ema_alpha}$',
+                    r'S',
+                    f'obs_spectral_{exp_args.spectral}_{name}',
+                    args.expname,
+                    args.extensions
+                )
+            except Exception as e:
+                msg = f'Exception occured while plotting obs_spectral_{exp_args.spectral}_{name}:\n' + str(e)
+                print(msg)
+                print(msg, file=sys.stderr)
+
+            try:
+                print(f'\nPlotting obs_eigvecs_{name}...')
+                plot_eigvecs(
+                    sorted_ts_flat,
+                    sorted_obs_eigvecs_flat,
+                    args.ntbins,
+                    args.nxbins,
+                    args.ticks_interval,
+                    r'$V_{oo,t}$ Component Density Heatmaps',
+                    f'obs_eigvecs_{name}',
+                    args.expname,
+                    args.extensions
+                )
+            except Exception as e:
+                msg = f'Exception occured while plotting obs_eigvecs_{name}:\n' + str(e)
+                print(msg)
+                print(msg, file=sys.stderr)
+
+            try:
+                print(f'\nPlotting hid_eigvecs_{name}...')
+                plot_eigvecs(
+                    sorted_ts_flat,
+                    sorted_hid_eigvecs_flat,
+                    args.ntbins,
+                    args.nxbins,
+                    args.ticks_interval,
+                    r'$V_{hh,t}$ Component Density Heatmaps',
+                    f'hid_eigvecs_{name}',
+                    args.expname,
+                    args.extensions
+                )
+            except Exception as e:
+                msg = f'Exception occured while plotting hid_eigvals_{name}:\n' + str(e)
+                print(msg)
+                print(msg, file=sys.stderr)
+
+            try:
+                print(f'\nPlotting mean_correction_{name}...')
+                plot_scatter_heatmap(
+                    sorted_ts_flat,
+                    sorted_mu_corrections_flat,
+                    args.highlight_interval,
+                    args.ntbins,
+                    args.nxbins,
+                    args.ax_w,
+                    args.ax_h,
+                    r'Mean Norms of $\mu_{h,t}$ Correction per Training Batch',
+                    r'$\left\| V_{h,t}^\dagger D_{h, t}^{\dagger \, 1/2} \varepsilon_0 \right\|$',
+                    f'mean_correction_{name}',
+                    args.expname,
+                    args.extensions
+                )
+            except Exception as e:
+                msg = f'Exception occured while plotting mean_correction_{name}:\n' + str(e)
+                print(msg)
+                print(msg, file=sys.stderr)
+
+            try:
+                print(f'\nPlotting gain_{name}...')
+                plot_scatter_heatmap(
+                    sorted_ts_flat,
+                    sorted_gains_flat,
+                    args.highlight_interval,
+                    args.ntbins,
+                    args.nxbins,
+                    args.ax_w,
+                    args.ax_h,
+                    'Mean Frobenius Norms of Gain per Training Batch',
+                    r'$\| K_t \|_F$',
+                    f'gain_{name}',
+                    args.expname,
+                    args.extensions
+                )
+            except Exception as e:
+                msg = f'Exception occured while plotting gain_{name}:\n' + str(e)
+                print(msg)
+                print(msg, file=sys.stderr)
 
 
 if __name__ == '__main__':
