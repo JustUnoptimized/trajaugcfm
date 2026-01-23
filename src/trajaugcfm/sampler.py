@@ -103,6 +103,7 @@ class GCFMSamplerBase(IterableDataset):
         gpr_nt:      int=8,
         rbfd_scale:  float=1.,
         cc_impute:   bool=False,
+        orient:      Literal['pre'] | Literal['post']='pre',
         reg:         float=1e-8,
         sigma:       float=1.0,
         sb_reg:      float=1e-8,
@@ -209,13 +210,20 @@ class GCFMSamplerBase(IterableDataset):
         ## Variance schedule (IFMixins only)
         self.sigma = sigma
 
-        self.cc_impute = cc_impute
         ## Regularization
         self.reg = reg
         self.obsreg = np.eye(self.nobs)[None, None, ...] * self.reg
         self.hidreg = np.eye(self.nhid)[None, None, ...] * self.reg
         self.sb_reg = sb_reg
 
+        ## Cross-Cov Imputation
+        self.cc_impute = cc_impute
+        self.preorient = orient == 'pre'
+        if not self.preorient and orient != 'post':
+            ## received neither pre nor post
+            raise ValueError(
+                f'argument orient must be "pre" or "post" but got {orient}'
+            )
         ## Spectral Filtering
         self.tau = tau
         self.maxgain = spectral == 'maxgain'

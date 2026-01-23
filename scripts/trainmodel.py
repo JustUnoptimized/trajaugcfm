@@ -128,6 +128,10 @@ def parse_args() -> argparse.Namespace:
             +' Otherwise, set cross-covariance to 0.'
     )
     flowgroup.add_argument(
+        '--orient', type=str, choices=['pre', 'post'], default='pre',
+        help='Pre- or post-orient eigenvectors during cross-covariance impute.'
+    )
+    flowgroup.add_argument(
         '--sigma', type=float, default=1.0,
         help='Scale for variance schedule. Ignored if using anisotropic flow.'
     )
@@ -469,6 +473,7 @@ def main() -> None:
         gpr_nt=args.gprnt,
         rbfd_scale=args.rbfdistscale,
         cc_impute=args.cc_impute,
+        orient=args.orient,
         reg=args.reg,
         sigma=args.sigma,
         sb_reg=args.sb_reg,
@@ -497,6 +502,7 @@ def main() -> None:
         gpr_nt=args.gprnt,
         rbfd_scale=args.rbfdistscale,
         cc_impute=args.cc_impute,
+        orient=args.orient,
         reg=args.reg,
         sigma=args.sigma,
         sb_reg=args.sb_reg,
