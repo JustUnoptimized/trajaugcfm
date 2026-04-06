@@ -6,9 +6,58 @@ conda activate ./venv
 ```
 
 ## Directory Structure
-Directory names are fairly self-explanatory. The main source code is in `src/trajaugcfm/`. In particular, [`src/trajaugcfm/constants.py`](src/trajaugcfm/constants.py) contains several useful constants such as paths to `data/` and `results/` as well as the observable variable names from the MARM simulator. [`src/trajaugcfm/sampler.py`](src/trajaugcfm/sampler.py) contains the main code in the `TrajAugCFMSampler` class which implements a `torch.utils.data.IterableDataset` for (relatively) painless dataloading for the training scripts. Do note that this class automatically handles batching so if passing `TrajAugCFMSampler` to a `torch.utils.data.DataLoader`, the `batch_size` kwarg MUST be set to `None`. Finally, [`src/trajaugcfm/models/model.py`](src/trajaugcfm/models/models.py) contains a simple MLP with SeLU activation functions.
+Directory names are fairly self-explanatory. The main source code is in `src/trajaugcfm/` and runner scripts are found in `scripts/`.
 
-## Running the Code
+## Main Source Code
+### Sampler
+Main logic is located in [`src/trajaugcfm/sampler.py`](src/trajaugcfm/sampler.py). The main class is `GCFMSamplerBase` (short for Guided Conditional FM) which implements `torch.utils.data.IterableDataset` for (relatively) painless dataloading for the training scripts.
+
+The various flow/score matching options are selected via the Mixin pattern.
+Flow Mixins:
+- `AFMixin` (Anisotropic Flow Mixin)
+- `IFCBMixin` (Isotropic Flow Constant Bridge)
+- `IFSBMixin` (Isotropic Flow Schrodinger Bridge)
+
+Score Mixins (currently not used for any testing/prototyping):
+- `ASMixin` (Anisotropic Score Mixin)
+- `NSMixin` (No Score Mixin)
+
+Time Sampler Mixins:
+- `UniformTimeMixin` ($t \sim \mathcal{U}(0, 1)$)
+- `BetaTimeMixin` ($t \sim \operatorname{Beta}(a, a)$)
+
+Time Enrich Mixins:
+- `TimeRFFMixin` (Enrich $t$ with random Fourier features)
+- `TimeNoEnrichMixin` (Use raw $t$)
+
+To use the mixins, the actual sampler is constructed and used via the following pseudocode:
+```python
+bases = (time_mixin, time_enrich_mixin, flow_mixin, score_mixin, GCFMSamplerBase)
+GCFMSampler = type('GCFMSampler', bases, {})
+sampler = GCFMSampler(*args, **kwargs)
+dataloader = DataLoader(sampler, batch_size=None)  # torch.utils.data.DataLoader
+for i, batch in enumerate(dataloader):
+    # train epoch
+```
+This class automatically handles batching so if passing `GCFMSampler` to a `torch.utils.data.DataLoader`, the `batch_size` kwarg MUST be set to `None`.
+
+<**Note**> *The `af-explore` branch is currently set up specifically for the `AFMixin` which implements anisotropic flow matching.* </**Note**>
+
+### Eigenvector Orientation
+Found at [`src/trajaugcfm/eig_orient.py`](src/trajaugcfm/eigen_orient.py), which itself is a vectorized re-implementation of [A Consistently Oriented Basis for Eigenanalysis: Improved Directional Statistics](https://link.springer.com/article/10.1007/s41060-024-00570-5) ([GitHub](https://gitlab.com/thucyd-dev/thucyd)) by Jay Damask (2025). The re-impementation forces alignment to first octant.
+
+### Models
+[`src/trajaugcfm/models/model.py`](src/trajaugcfm/models/models.py) contains a simple MLP with SeLU activation functions.
+
+### Utils
+[`src/trajaugcfm/utils.py`](src/trajaugcfm/utils.py) contains a few utility functions. Not all functions used and some may be removed/changed in later commits, especially due to redundancy from `numpy` or `scipy` implementations.
+
+### Constants
+[`src/trajaugcfm/constants.py`](src/trajaugcfm/constants.py) contains several useful constants such as paths to `data/` and `results/` as well as the observable variable names from the MARM simulator.
+
+## Main Scripts
+All scripts can be called with the `-h` or `--help` flags to see a brief description of all the possible command-line arguments.
+
 ### Training
 The main training script can be found at [`scripts/trainmodel.py`](scripts/trainmodel.py). For now, the easiest way to run the code is to call (with the venv activated):
 ```bash
@@ -50,3 +99,33 @@ The metrics are saved into `results/<experiment_name>/evals.npz` which can be ke
 `EMD` and `Entropic EMD` have shape `(N,)`.
 `abserr` has shape `(N, T, d)`.
 The input arguments are saved into `results/<experiment_name>/eval_args.json`.
+
+### Plotting
+The plotting script is at [`scripts/make_plots.py`](scripts/make_plots.py). Call it using
+```bash
+python scripts/make_plots.py [--myargs]
+```
+This script will plot the following:
+- Train/validation loss curve
+- Learning rate
+- Inferred trajectories
+- Metrics computed over the inferred trajectories
+
+Additionally if the `--diagnostics` flag was set for `trainmodel.py` then this will plot the following:
+- Observed variable eigenvalues
+- Observed variable eigenvalue inverses
+- Observed variable (oriented) eigenvectors
+- Observed variable spectral scores
+- Hidden variable eigenvalues
+- Hidden variable eigenvectors
+- Mean correction to hidden variable time-varying mean
+- Gain
+
+## Running Batch Experiments Using Slurm
+The utility script [`batch_run.sh`](batch_run.sh) contains the logic defining the experiment save directory, hyperpameters, and running the train -> trajgen -> eval -> plot pipeline detailed above. Call the script using
+```bash
+./batch_run [-h | --help] [options]
+```
+You can use the `-h` or `--help` flags to see a brief descripion of the possible options defining where to save results. In short, the script collects all the possible given argument combinations and saves it into a `.txt` file, which is then read off of to submit jobs to Slurm. See [`runner.slurm`](runner.slurm) for any Slurm configs not detailed in the called `sbatch` commands.
+
+Additionally, the script also outputs a rudimentary `expkeys.json` file outlining which directory contains which experiment.

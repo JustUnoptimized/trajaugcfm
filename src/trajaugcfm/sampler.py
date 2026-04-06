@@ -911,22 +911,27 @@ class GCFMSamplerBase(IterableDataset):
         Sigma_otpd, Sigma_htpd, *auxtpd = self._compute_sigma_t(tspd, covs)
         Sigma_otmd, Sigma_htmd, *auxtmd = self._compute_sigma_t(tsmd, covs)
         mu_t_gpr, Sigma_t_gpr = self._compute_mu_t_sigma_t_gpr(refidxs, ts)
-        So, Qo, Sh, Qh = self._process_Sigma_t(Sigma_ot, Sigma_ht)
+        So, Qo, Sh, Qh, w = self._process_Sigma_t(Sigma_ot, Sigma_ht)  # [FIX 2: Unpack weights]
+        Ao = self.Sigma_t_obs(ts, derivative=False, chol=True)  # Get Cholesky for FIX 3
         cond_mu_t, cond_A_t, mu_correction_t = self._compute_cond_params(
-            mu_t[:, :, self.hidmask], Qh, Sh, eps[:, :, :, self.obsmask]
+            mu_t[:, :, self.hidmask], Qh, Sh, eps[:, :, :, self.obsmask],
+            w=w, Ao=Ao, Qo=Qo  # [FIX 3: Pass weights, Cholesky, and eigenvectors]
         )
-        Sopd, Qopd, Shpd, Qhpd = self._process_Sigma_t(Sigma_otpd, Sigma_htpd)
+        Sopd, Qopd, Shpd, Qhpd, wpd = self._process_Sigma_t(Sigma_otpd, Sigma_htpd)
+        Aopd = self.Sigma_t_obs(tspd, derivative=False, chol=True)
         cond_mu_tpd, cond_A_tpd, mu_correction_tpd = self._compute_cond_params(
-            mu_t[:, :, self.hidmask], Qhpd, Shpd, eps[:, :, :, self.obsmask]
+            mu_t[:, :, self.hidmask], Qhpd, Shpd, eps[:, :, :, self.obsmask],
+            w=wpd, Ao=Aopd, Qo=Qopd
         )
-        Somd, Qomd, Shmd, Qhmd = self._process_Sigma_t(Sigma_otmd, Sigma_htmd)
+        Somd, Qomd, Shmd, Qhmd, wmd = self._process_Sigma_t(Sigma_otmd, Sigma_htmd)
+        Aomd = self.Sigma_t_obs(tsmd, derivative=False, chol=True)
         cond_mu_tmd, cond_A_tmd, mu_correction_tmd = self._compute_cond_params(
-            mu_t[:, :, self.hidmask], Qhmd, Shmd, eps[:, :, :, self.obsmask]
+            mu_t[:, :, self.hidmask], Qhmd, Shmd, eps[:, :, :, self.obsmask],
+            w=wmd, Ao=Aomd, Qo=Qomd
         )
         # xt = self._sample_xt(refidxs, mu_t, Sigma_t, mu_t_gpr, Sigma_t_gpr, eps)
-        Ao = self.Sigma_t_obs(ts, derivative=False, chol=True)
         ## TODO: align IFCB and IFSB Mixins to follow this method signature?
-        xt = self._sample_xt(refidxs, mu_t_gpr, Ao, cond_mu_t, cond_A_t, eps)
+        xt = self._sample_xt(refidxs, mu_t_gpr, Ao, cond_mu_t, cond_A_t, eps)  # Ao already computed above
         mu_t_aug = self._concat_mu_t_obshid(mu_t_gpr, cond_mu_t)
         mu_t_gpr_prime = self._compute_gpr_dmudt(refidxs, ts)
         cond_mu_t_prime = (cond_mu_tpd - cond_mu_tmd) / self.delta
@@ -1109,27 +1114,37 @@ class AFMixin:
             score = w / (Lo + self.reg) if self.maxgain else w * Lo
             sortidx = np.flip(np.argsort(score, axis=-1), axis=-1)
 
-            ## sort Qo and Lo
+            ## sort Qo, Lo, and w [FIX 1: Sort weights with eigenvalues]
             Qo = np.take_along_axis(Qo, sortidx[:, None], axis=-1)
             Lo = np.take_along_axis(Lo, sortidx, axis=-1)
+            w = np.take_along_axis(w, sortidx, axis=-1)  # [FIX 1]
 
             ## Orient eigvecs to consistent signs
             Qh, _, _ = orient_eigenvectors(Qh)
             Qo, _, _ = orient_eigenvectors(Qo)
+        else:
+            w = None  # No weights when cc_impute is False
 
-        return np.sqrt(Lo), Qo, np.sqrt(Lh), Qh
+        return np.sqrt(Lo), Qo, np.sqrt(Lh), Qh, w  # [FIX 2: Return weights]
 
     def _compute_cond_params(
         self,
         mu_t_hid: jt.Real[np.ndarray, 'k nt hid'],
         Qh: jt.Real[np.ndarray, 'k nt hid hid'],
         Sh: jt.Real[np.ndarray, 'k nt hid'],
-        eps_obs: jt.Real[np.ndarray, 'k b nt obs']
+        eps_obs: jt.Real[np.ndarray, 'k b nt obs'],
+        w: jt.Real[np.ndarray, 'nt obs'] = None,  # [FIX 3: Add weights param]
+        Ao: jt.Real[np.ndarray, 'nt obs obs'] = None,  # [FIX 3: Add Cholesky]
+        Qo: jt.Real[np.ndarray, 'nt obs obs'] = None   # [FIX 3: Add eigenvectors]
     ) -> tuple[jt.Real[np.ndarray, 'k b nt hid'], jt.Real[np.ndarray, 'k b nt hid hid'], jt.Real[np.ndarray, 'k b nt hid']]:
         '''Compute params for mu_t_hid and Sigma_t_hid given obs.
 
         Note that cross-covariance Sigma_oht and gain Kt
         are never explicitly computed!
+
+        [FIX 3] Signal Gating & Basis Alignment:
+        - Project noise through Cholesky -> Eigenbasis
+        - Apply spectral weights to filter noise modes
         '''
         if self.cc_impute:
             Qh_hi = Qh[..., :self.nobs]
@@ -1139,7 +1154,20 @@ class AFMixin:
             Qh_lo = Qh[..., self.nobs:]
             Sh_lo = Sh[..., self.nobs:]
 
-            mu_correction = np.matvec(Ah_hi[:, None], eps_obs)
+            # [FIX 3] Project noise through eigenbasis and apply spectral weights
+            if w is not None and Ao is not None and Qo is not None:
+                # 1. Transform noise through Cholesky: x = Ao @ eps
+                x_noise = np.einsum('tij,kbtj->kbti', Ao, eps_obs)
+                # 2. Project to eigenbasis: z = Qo.T @ x
+                z_proj = np.einsum('tji,kbtj->kbti', Qo, x_noise)
+                # 3. Apply spectral weights (signal gating)
+                z_weighted = z_proj * w[None, None, :, :]
+                # 4. Compute correction using weighted projection
+                mu_correction = np.einsum('ktij,kbtj->kbti', Ah_hi, z_weighted)
+            else:
+                # Fallback to original behavior
+                mu_correction = np.matvec(Ah_hi[:, None], eps_obs)
+
             cond_mu_t = mu_t_hid[:, None] + mu_correction
             cond_A_t = Qh_lo * Sh_lo[..., None, :]
         else:

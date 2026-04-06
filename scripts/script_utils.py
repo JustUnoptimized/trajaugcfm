@@ -66,8 +66,59 @@ def typename(x: Any) -> str:
     return type(x).__name__ if x is not None else 'None'
 
 
+def resolve_exppath(expname: str) -> str:
+    '''Resolve experiment path from absolute, results/, or nested results/results forms.'''
+    candidates: list[str] = []
+    if expname:
+        candidates.append(expname)
+
+    if not os.path.isabs(expname):
+        candidates.append(os.path.join(RESDIR, expname))
+        candidates.append(os.path.join(RESDIR, 'results', expname))
+
+    if expname.startswith(f'results{os.sep}'):
+        stripped = expname[len(f'results{os.sep}'):]
+        candidates.append(stripped)
+        candidates.append(os.path.join(RESDIR, stripped))
+        candidates.append(os.path.join(RESDIR, 'results', stripped))
+
+    if expname.startswith(f'results{os.sep}results{os.sep}'):
+        stripped = expname[len(f'results{os.sep}results{os.sep}'):]
+        candidates.append(stripped)
+        candidates.append(os.path.join(RESDIR, stripped))
+        candidates.append(os.path.join(RESDIR, 'results', stripped))
+
+    if expname.startswith(RESDIR):
+        candidates.append(expname)
+
+    seen: set[str] = set()
+    for cand in candidates:
+        if not cand:
+            continue
+        cand = os.path.normpath(os.path.expanduser(cand))
+        if cand in seen:
+            continue
+        seen.add(cand)
+        if os.path.exists(cand):
+            return cand
+
+    tried = ', '.join(seen) if seen else '<none>'
+    raise FileNotFoundError(f'Experiment path not found. Tried: {tried}')
+
+
+def resolve_exppath_for_save(expname: str) -> str:
+    '''Normalize experiment output path to avoid nesting results/results.'''
+    if os.path.isabs(expname):
+        return os.path.normpath(os.path.expanduser(expname))
+
+    while expname.startswith(f'results{os.sep}'):
+        expname = expname[len(f'results{os.sep}'):]
+
+    return os.path.join(RESDIR, expname)
+
+
 def load_args(expname: str, filename: str) -> SimpleNamespace:
-    exppath = os.path.join(RESDIR, expname)
+    exppath = resolve_exppath(expname)
     with open(os.path.join(exppath, filename), 'r') as f:
         exp_args = json.load(f)
     return SimpleNamespace(**exp_args)
@@ -219,4 +270,3 @@ def exitcodewrapper(f: Callable[..., None]) -> Callable[..., None]:
             traceback.print_exc(file=sys.stderr)
             sys.exit(1)
     return wrapper
-

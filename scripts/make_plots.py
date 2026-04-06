@@ -15,9 +15,6 @@ import pandas as pd
 import seaborn as sns
 from sklearn.model_selection import train_test_split
 
-from trajaugcfm.constants import (
-    RESDIR,
-)
 from trajaugcfm.utils import (
     np_sigmoid,
 )
@@ -34,6 +31,7 @@ from script_utils import (
     load_args,
     load_data,
     load_scalers,
+    resolve_exppath,
     scale_data_with_scalers,
 )
 
@@ -124,9 +122,7 @@ def parse_args() -> argparse.Namespace:
 
 def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     ## commongroup check
-    exppath = os.path.join(RESDIR, args.expname)
-    assert os.path.exists(exppath), f'{exppath} not found'
-    args.expname = exppath
+    args.expname = resolve_exppath(args.expname)
     assert args.ax_h > 0, f'ax-h must be positive but got {args.ax_h}'
     assert args.ax_w > 0, f'ax-w must be positive but got {args.ax_w}'
     assert args.metric_ncols > 0, f'metric-ncols must be positive but got {args.metric_ncols}'
@@ -1167,4 +1163,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-

@@ -11,7 +11,6 @@ from torch.utils.data import DataLoader
 
 from trajaugcfm.constants import (
     DATADIR,
-    RESDIR,
     IDX2RCMC_SAVENAME
 )
 from trajaugcfm.models import (
@@ -27,6 +26,7 @@ from script_utils import (
     exitcodewrapper,
     int_or_float,
     load_data,
+    resolve_exppath_for_save,
     save_scalers,
     scale_data,
     typename
@@ -279,8 +279,7 @@ def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     Returns args.
     '''
     ## expgroup check
-    exppath = os.path.join(RESDIR, args.expname)
-    args.expname = exppath
+    args.expname = resolve_exppath_for_save(args.expname)
 
     ## datagroup check
     datadir = os.path.join(DATADIR, args.data)
@@ -587,4 +586,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-

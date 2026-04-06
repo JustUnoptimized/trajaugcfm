@@ -10,10 +10,6 @@ from scipy.spatial.distance import cdist
 from sklearn.model_selection import train_test_split
 from tqdm import trange
 
-from trajaugcfm.constants import (
-    RESDIR,
-)
-
 from script_utils import (
     TRAINARGS_FILENAME,
     TRAJGENARGS_FILENAME,
@@ -21,6 +17,7 @@ from script_utils import (
     EVALARGS_FILENAME,
     EVALS_FILENAME,
     exitcodewrapper,
+    resolve_exppath,
     load_args,
     load_data,
     load_scalers,
@@ -52,9 +49,7 @@ def parse_args() -> argparse.Namespace:
 
 def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     ## expgroup check
-    exppath = os.path.join(RESDIR, args.expname)
-    assert os.path.exists(exppath), f'{exppath} not found'
-    args.expname = exppath
+    args.expname = resolve_exppath(args.expname)
 
     ## metricgroup check
     assert args.reg > 0, f'reg must be positive but got {args.reg}'
@@ -206,8 +201,15 @@ def main() -> None:
     print('trajs shape', trajs.shape)
 
     ## Need to get which traj corresponds to which x0 in data_val_snapshots_scaled
-    prng = np.random.default_rng(seed=inf_args.seed)
-    idxs = prng.choice(data_val_snapshots_scaled.shape[0], size=trajs.shape[0], replace=False)
+    ## Use saved indices when available (exact match); fall back to seed-based resampling
+    idxs_path = os.path.join(args.expname, 'trajgen_idxs.npy')
+    if os.path.exists(idxs_path):
+        idxs = np.load(idxs_path)
+        print(f'Loaded trajgen_idxs.npy ({len(idxs)} indices)')
+    else:
+        prng = np.random.default_rng(seed=inf_args.seed)
+        idxs = prng.choice(data_val_snapshots_scaled.shape[0], size=trajs.shape[0], replace=False)
+        print(f'Resampled indices from seed={inf_args.seed}')
 
     ## Pointwise metrics (RMSE and Cosine Similarity)
     pw_metrics = compute_pointwise_metrics(data_val_snapshots_scaled[idxs], trajs)
@@ -234,4 +236,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-

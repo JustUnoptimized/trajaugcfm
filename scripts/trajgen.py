@@ -10,9 +10,6 @@ import torch
 import torch.nn as nn
 from torchsde import sdeint
 
-from trajaugcfm.constants import (
-    RESDIR,
-)
 from trajaugcfm.models import (
     MLP,
     FlowScoreMLP,
@@ -25,6 +22,7 @@ from script_utils import (
     TRAJGENARGS_FILENAME,
     TRAJGEN_FILENAME,
     exitcodewrapper,
+    resolve_exppath,
     load_args,
     load_data,
     load_scalers,
@@ -138,9 +136,7 @@ def parse_args() -> argparse.Namespace:
 
 def chk_fmt_args(args: argparse.Namespace) -> argparse.Namespace:
     ## expgroup check
-    exppath = os.path.join(RESDIR, args.expname)
-    assert os.path.exists(exppath), f'{exppath} not found'
-    args.expname = exppath
+    args.expname = resolve_exppath(args.expname)
 
     ## sdegroup check
     assert args.sigma > 0, f'sigma must be positive but got {args.sigma}'
@@ -274,7 +270,7 @@ def main() -> None:
 
 
     prng = np.random.default_rng(seed=args.seed)
-    nx0 = data_val_snapshots_scaled.shape[0] if args.n == -1 else args.n
+    nx0 = data_val_snapshots_scaled.shape[0] if args.n == -1 else min(data_val_snapshots_scaled.shape[0], args.n)
     idxs = prng.choice(data_val_snapshots_scaled.shape[0], size=nx0, replace=False)
     x0 = torch.from_numpy(data_val_snapshots_scaled[idxs, 0, :].astype(np.float32))
     nts = data_val_refs_scaled.shape[1] if args.nt == -1 else args.nt
@@ -318,4 +314,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
