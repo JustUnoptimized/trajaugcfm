@@ -29,7 +29,7 @@ def build_indexer(
 def roundrobin_split_idxs(
     N: int,
     nfenceposts: int,
-) -> jt.Int[np.ndarray, 'nfenceposts']:
+) -> jt.Int[np.ndarray, ' nfenceposts']:
     '''Return nfenceposts evenly spaced indices from 0 to N-1'''
     fps = [tmp.shape[0] for tmp in np.array_split(np.arange(N), nfenceposts-1)]
     fps[0] -= 1
@@ -40,7 +40,7 @@ def roundrobin_split_idxs(
 def batch_interp(
     a: jt.Real[np.ndarray, '#batch *dims'],
     b: jt.Real[np.ndarray, '#batch *dims'],
-    t: jt.Real[np.ndarray, 'times']
+    t: jt.Real[np.ndarray, ' times']
 ) -> jt.Real[np.ndarray, 'batch times *dims']:
     '''Interpolates a batch from a to b assuming t from 0 to 1'''
     t_broadcast = t[None, :, *(None for _ in range(a.ndim-1))]  ## 1 times ...1
@@ -112,4 +112,22 @@ def torch_bmv(
           have the same batch dimensions!
     '''
     return (A @ x.unsqueeze(-1)).squeeze(-1)
+
+
+def quad_lift(
+    x: jt.Real[np.ndarray, '... n'],
+) -> jt.Real[np.ndarray, '... n+(n*(n+1)/2)']:
+    '''Compute full quadratic lift of batch of vectors x.
+
+    Maps Phi(x) -> [x, vech(xx^T)] capturing both linear and pairwise
+    interaction terms.
+
+    Operates on batch of vectors. If x has shape (*b, n) then output
+    has shape (*b, n+(n*(n+1)/2)) for some shape tuple (*b) = (b1, b2, ...).
+    '''
+    n = x.shape[-1]
+    path, _ = np.einsum_path('...i,...j->...ij', x, x)
+    x_outer = np.einsum('...i,...j->...ij', x, x, optimize=path)
+    x_outer_tril = x_outer[..., *np.tril_indices(n)]
+    return np.concatenate([x, x_outer_tril], axis=-1)
 

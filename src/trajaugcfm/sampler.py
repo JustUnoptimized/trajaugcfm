@@ -608,60 +608,71 @@ class GCFMSamplerBase(IterableDataset):
 
     def __iter__(self) -> Self:
         '''First resets iteration state, then returns self'''
-        self._iteridx = -1  ## -1 instead of 0 because next() increments first
         self.prng.shuffle(self._Xrefidxs)
+        self._batch_iter = (
+            self._Xrefidxs[i*self.k:(i+1)*self.k]
+            for i in range(self._len)
+        )
         return self
+        # self._iteridx = -1  ## -1 instead of 0 because next() increments first
+        # self.prng.shuffle(self._Xrefidxs)
+        # return self
 
     def __next__(self) -> GCFMBatch:
-        if self._iteridx < self._sentinel:
-            self._iteridx += 1
+        # if self._iteridx < self._sentinel:
+        try:
+            refidxs = next(self._batch_iter)
+        except StopIteration:
+            raise
+            # self._iteridx += 1
             ## Hacky iteration to get idxs[i:i+k]
             ## TODO: use internal bound generator rather than this clunky expr?
-            refidxs = self._Xrefidxs[self._iteridx*self.k:(self._iteridx+1)*self.k]
+            # refidxs = self._Xrefidxs[self._iteridx*self.k:(self._iteridx+1)*self.k]
             ## Sample k refs
-            refs = self.Xrefs[refidxs]
 
-            ## Independently sample minibatch
-            xs = self._get_xs_minibatch()
+        refs = self.Xrefs[refidxs]
 
-            ## Resample according to refs
-            z = self._sample_z_given_refs(xs, refs)
-            mus, covs = self._compute_marginal_mu_sigma(z)
+        ## Independently sample minibatch
+        xs = self._get_xs_minibatch()
 
-            ## Sample t according to chosen distribution
-            ts = self._sample_ts()
+        ## Resample according to refs
+        z = self._sample_z_given_refs(xs, refs)
+        mus, covs = self._compute_marginal_mu_sigma(z)
 
-            batch_shape = (refidxs.shape[0], self.b, self.nt)
+        ## Sample t according to chosen distribution
+        ts = self._sample_ts()
 
-            ## Main algorithm
-            mu_t = self._compute_mu_t(ts, mus)
-            Sigma_t, aux = self._compute_sigma_t(ts, covs)
-            mu_t_gpr, sigma_t_gpr = self._compute_mu_t_sigma_t_gpr(refidxs, ts)
-            eps = self.prng.normal(size=(*batch_shape, self.dim))
-            xt = self._sample_xt(refidxs, mu_t, Sigma_t, mu_t_gpr, sigma_t_gpr, eps)
-            mu_t_aug = self._compute_mu_t_aug(mu_t, mu_t_gpr)
-            mu_t_aug_prime = self._compute_mu_t_aug_prime(refidxs, ts, mus)
-            xt_diff = self._compute_xt_diff(xt, mu_t_aug)
-            A_t_prime_A_t_inv = self._compute_A_t_prime_A_t_inv(ts, aux)
-            ut = self._compute_ut(xt_diff, mu_t_aug_prime, A_t_prime_A_t_inv)
-            lt = self._compute_lambda(ts, covs)
+        batch_shape = (refidxs.shape[0], self.b, self.nt)
 
-            ## Flatten and cast into Tensors of shape (k*b*nt, dims)
-            ## and cast to float32 for compatibility with default torch float operations
-            ts = self._enrich_ts(ts)
-            ts = np.broadcast_to(ts[None, None, ...], (*batch_shape, ts.shape[-1]))
-            ts = torch.from_numpy(ts.reshape((-1, ts.shape[-1])).astype(np.float32))
-            xt = torch.from_numpy(xt.reshape((-1, xt.shape[-1])).astype(np.float32))
-            ut = torch.from_numpy(ut.reshape((-1, ut.shape[-1])).astype(np.float32))
-            eps = torch.from_numpy(eps.reshape((-1, eps.shape[-1])).astype(np.float32))
-            if lt is not None:
-                lt = np.broadcast_to(lt[:, None, ...], (*batch_shape, self.dim, self.dim))
-                lt = torch.from_numpy(lt.reshape((-1, *lt.shape[-2:])).astype(np.float32))
+        ## Main algorithm
+        mu_t = self._compute_mu_t(ts, mus)
+        Sigma_t, aux = self._compute_sigma_t(ts, covs)
+        mu_t_gpr, sigma_t_gpr = self._compute_mu_t_sigma_t_gpr(refidxs, ts)
+        eps = self.prng.normal(size=(*batch_shape, self.dim))
+        xt = self._sample_xt(refidxs, mu_t, Sigma_t, mu_t_gpr, sigma_t_gpr, eps)
+        mu_t_aug = self._compute_mu_t_aug(mu_t, mu_t_gpr)
+        mu_t_aug_prime = self._compute_mu_t_aug_prime(refidxs, ts, mus)
+        xt_diff = self._compute_xt_diff(xt, mu_t_aug)
+        A_t_prime_A_t_inv = self._compute_A_t_prime_A_t_inv(ts, aux)
+        ut = self._compute_ut(xt_diff, mu_t_aug_prime, A_t_prime_A_t_inv)
+        lt = self._compute_lambda(ts, covs)
 
-            return ts, xt, ut, eps, lt
+        ## Flatten and cast into Tensors of shape (k*b*nt, dims)
+        ## and cast to float32 for compatibility with default torch float operations
+        ts = self._enrich_ts(ts)
+        ts = np.broadcast_to(ts[None, None, ...], (*batch_shape, ts.shape[-1]))
+        ts = torch.from_numpy(ts.reshape((-1, ts.shape[-1])).astype(np.float32))
+        xt = torch.from_numpy(xt.reshape((-1, xt.shape[-1])).astype(np.float32))
+        ut = torch.from_numpy(ut.reshape((-1, ut.shape[-1])).astype(np.float32))
+        eps = torch.from_numpy(eps.reshape((-1, eps.shape[-1])).astype(np.float32))
+        if lt is not None:
+            lt = np.broadcast_to(lt[:, None, ...], (*batch_shape, self.dim, self.dim))
+            lt = torch.from_numpy(lt.reshape((-1, *lt.shape[-2:])).astype(np.float32))
 
-        else:
-            raise StopIteration
+        return ts, xt, ut, eps, lt
+
+        # else:
+            # raise StopIteration
 
 
 class UniformTimeMixin:
