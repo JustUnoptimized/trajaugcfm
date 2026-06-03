@@ -87,10 +87,14 @@ class PSplineBackend(FPCABackend):
         if self.use_penalty:
             if self.verbose:
                 print(f'Using order {self.p_order} smoothing penalty')
-            reg = L2Regularization(LinearDifferentialOperator(self.p_order))
-            Pen = reg.penalty_matrix(bsb)[1:-1, 1:-1]
-            # ridge reg. for eigh stability
-            w = sla.eigvalsh(BBT, Pen + 1e-8 * np.eye(Pen.shape[0]))
+            # Pen = \int D_p B(t) D_p B(t)^\top dt
+            Pen = (
+                L2Regularization(LinearDifferentialOperator(self.p_order))
+                .penalty_matrix(bsb)[1:-1, 1:-1]
+            )
+            # Pen = reg.penalty_matrix(bsb)[1:-1, 1:-1]
+            # ridge regularization. for eigh stability
+            w = sla.eigvalsh(BBT, Pen + 1e-6 * np.eye(Pen.shape[0]))
             if self.smoothing_lambda is not None:
                 # use the provided lambda directly
                 self._edf_lambda = self._compute_edf(w, self.smoothing_lambda)
@@ -115,7 +119,11 @@ class PSplineBackend(FPCABackend):
         C_centered = C - C_mean
         G0 = bsb.gram_matrix()[1:-1, 1:-1]
         if self._sobolev_weight is not None:
-            G1 = bsb.derivative().gram_matrix()[1:-1, 1:-1]
+            # G1 = \int \dot{B}(t) \dot{B}(t)^\top dt
+            G1 = (
+                L2Regularization(LinearDifferentialOperator(1))
+                .penalty_matrix(bsb)[1:-1, 1:-1]
+            )
             G1_scale = np.trace(G0) / np.trace(G1)
             G_basis = G0 + (self.sobolev_weight * G1_scale * G1)
         else:
@@ -147,8 +155,18 @@ class PSplineBackend(FPCABackend):
         if self.mode_cutoff_strat == 'var':
             m = self._var_expl_cutoff(Sigma)
         elif self.mode_cutoff_strat == 'mp':
-            fs_bsb = B.T[None, ...] @ C
-            sigma2 = (fs - fs_bsb).var()  # noise variance
+            # Use variance of resids between raw trajs and unpenalized projection
+            # as estimate of noise variance.
+            # Heuristic is that unfittable deviations = noise.
+            if self.use_penalty:
+                # refit coeffs C for best ambient space B-spline projection
+                Cproj = np.linalg.solve(BBT, B)[None, ...] @ fs
+            else:
+                # current coeffs are best ambient space B-spline projection
+                Cproj = C
+            fs_proj = B.T[None, ...] @ Cproj
+            # compute noise variance; ddof = 0 because MP assumes population stats
+            sigma2 = (fs - fs_proj).var()
             m = self._mp_thresh_cutoff(Sigma * bessel / R, sigma2, R, T*do)
         else:
             # should never see this
