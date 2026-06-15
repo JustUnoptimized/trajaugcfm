@@ -83,8 +83,7 @@ class SVDBackend(FPCABackend):
             # should never see this
             raise ValueError(f'mode_cutoff_strat must be "var" or "mp" but found {self.mode_cutoff_strat}')
         m = self._mode_cutoff_bound(m)
-        if self.verbose:
-            print(f'Using m = {m} modes')
+        self._compute_var_expl(eigvals, m)
 
         # Get scores and eigenmodes
         Lambdas = U[:, :m] * S[None, :m]
@@ -105,7 +104,7 @@ class SVDBackend(FPCABackend):
         self.T = T
         return Lambdas
 
-    def _query(
+    def query(
         self,
         Lambdas_i: Float32[Tensor, 'B ns M'],
         t: Float32[Tensor, ' T'],

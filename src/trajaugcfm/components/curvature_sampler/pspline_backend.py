@@ -92,14 +92,15 @@ class PSplineBackend(FPCABackend):
                 L2Regularization(LinearDifferentialOperator(self.p_order))
                 .penalty_matrix(bsb)[1:-1, 1:-1]
             )
-            # Pen = reg.penalty_matrix(bsb)[1:-1, 1:-1]
-            # ridge regularization. for eigh stability
+            # ridge regularization. for (generalized) eigh stability
             w = sla.eigvalsh(BBT, Pen + 1e-6 * np.eye(Pen.shape[0]))
             if self.smoothing_lambda is not None:
                 # use the provided lambda directly
                 self._edf_lambda = self._compute_edf(w, self.smoothing_lambda)
             elif self.edf_lambda is not None:
                 # search for lambda corresponding to edf in log space
+                if self.verbose:
+                    print('Edf lambda provided. Solving for corresponding smoothing lambda')
                 sl_log, rootres = brentq(
                     lambda x: self._compute_edf(w, np.exp(x)) - self.edf_lambda,
                     np.log(1e-8),
@@ -172,8 +173,7 @@ class PSplineBackend(FPCABackend):
             # should never see this
             raise ValueError(f'mode_cutoff_strat must be "var" or "mp" but found {self.mode_cutoff_strat}')
         m = self._mode_cutoff_bound(m)
-        if self.verbose:
-            print(f'Using m = {m} modes')
+        self._compute_var_expl(Sigma, m)
 
         # TODO: if using logging module, log a warning and then silently clip?
         assert Sigma[:m].min() > 0, 'Found non-positive eigvals of G_sample.'
@@ -199,11 +199,21 @@ class PSplineBackend(FPCABackend):
         self.T = T
         return Lambdas
 
-    def _query(
+    def _Lambdas_to_C(
         self,
         Lambdas_i: Float32[Tensor, 'B ns M'],
+    ) -> Float32[Tensor, 'B ns P do']:
+        """Construct P-spline projection coefficients C given scores Lambda."""
+        coeffs = torch.einsum('isj,jpd->ispd', Lambdas_i, self.A)
+        coeffs += self.C_mean[:, None, ...]  # un-center
+        return coeffs
+
+    def _query_C(
+        self,
+        C: Float32[Tensor, 'B ns P do'],
         t: Float32[Tensor, ' T'],
     ) -> tuple[Float32[Tensor, 'B ns T do'], Float32[Tensor, 'B ns T do']]:
+        """Queries curves and derivatives given P-spline projection coefficients."""
         # TODO: update later to full torch B-spline impl?
         # currently use lerp to bridge between T grid on B-spline values
         pos = t * (self.T - 1)
@@ -212,11 +222,16 @@ class PSplineBackend(FPCABackend):
         t_frac = (pos - lo.to(pos.dtype)).clamp(0, 1)[None, :]
         B_t = torch.lerp(self.B[:, lo], self.B[:, hi], t_frac)
         B_prime_t = torch.lerp(self.B_prime[:, lo], self.B_prime[:, hi], t_frac)
-        coeffs = torch.einsum('isj,jpd->ispd', Lambdas_i, self.A)
-        coeffs += self.C_mean[:, None, ...]  # un-center
-        f = torch.einsum('pt,ispd->istd', B_t, coeffs)
-        f_prime = torch.einsum('pt,ispd->istd', B_prime_t, coeffs)
+        f = torch.einsum('pt,ispd->istd', B_t, C)
+        f_prime = torch.einsum('pt,ispd->istd', B_prime_t, C)
         return f, f_prime
+
+    def query(
+        self,
+        Lambdas_i: Float32[Tensor, 'B ns M'],
+        t: Float32[Tensor, ' T'],
+    ) -> tuple[Float32[Tensor, 'B ns T do'], Float32[Tensor, 'B ns T do']]:
+        return self._query_C(self._Lambdas_to_C(Lambdas_i), t)
 
     def _compute_edf(self, w: Float[ndarray, ' j'], lmda: float) -> float:
         """Computes edf(lambda) = tr([BB.T + lambda*Pen].inv BB.T)
@@ -225,7 +240,6 @@ class PSplineBackend(FPCABackend):
         eigenvalues of BB.T and Pen.
         """
         return (w / (w + lmda)).sum()
-
 
     @property
     def n_basis(self) -> int:
