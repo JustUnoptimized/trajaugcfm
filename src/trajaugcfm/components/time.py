@@ -1,9 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Literal
 
-import numpy as np
 import torch
-from torch import Tensor
+from torch import Generator, Tensor
 
 from jaxtyping import Float32
 
@@ -17,7 +16,12 @@ class TimeRepr(ABC):
         self.device = device
 
     @abstractmethod
-    def enrich(self, ts: Float32[Tensor, ' nt']) -> Float32[Tensor, 'nt tdims']:
+    def enrich(self, ts: Float32[Tensor, ' nt']) -> Float32[Tensor, ' nt #tdims']:
+        ...
+
+    @property
+    @abstractmethod
+    def tdims(self) -> int:
         ...
 
 
@@ -25,8 +29,12 @@ class TimeRaw(TimeRepr):
     def __init__(self, device: Literal['cpu', 'cuda']) -> None:
         super().__init__(device)
 
-    def enrich(self, ts: Float32[Tensor, ' nt']) -> Float32[Tensor, 'nt tdims']:
+    def enrich(self, ts: Float32[Tensor, ' nt']) -> Float32[Tensor, 'nt 1']:
         return ts[:, None]
+
+    @property
+    def tdims(self) -> int:
+        return 1
 
 
 class TimeRFF(TimeRepr):
@@ -38,15 +46,15 @@ class TimeRFF(TimeRepr):
         device: Literal['cpu', 'cuda'],
     ) -> None:
         super().__init__(device)
-        # Use NumPy to get B and convert to Torch Tensor
         self.rffscale = rffscale
         self.rffdim = rffdim
         self.rffseed = rffseed
-        self.B = torch.from_numpy(
-            np.random.default_rng(seed=rffseed)
-            .normal(loc=0, scale=rffscale, size=(1, rffdim))
-            .astype(np.float32)
-        ).to(self.device)
+        self.B = torch.randn(  # use throwaway generator
+            (1, rffdim),
+            generator=Generator(device).manual_seed(rffseed),
+            device=device,
+        )
+        self.B *= rffscale
 
     def enrich(self, ts: Float32[Tensor, ' nt']) -> Float32[Tensor, 'nt tdims']:
         Bt = self.B * ts[:, None]  # (nt, rffdim)
@@ -54,8 +62,12 @@ class TimeRFF(TimeRepr):
         sinBt = torch.sin(Bt)
         return torch.cat((cosBt, sinBt), axis=1)
 
+    @property
+    def tdims(self) -> int:
+        return self.rffdim
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     device = 'cpu'
     raw = TimeRaw(device)
 
@@ -72,3 +84,4 @@ if __name__ == "__main__":
 
     print(rawts)
     print(rffts)
+

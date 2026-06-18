@@ -3,11 +3,6 @@ from .time import (
     TimeRaw,
     TimeRFF,
 )
-from .interpolant import (
-    Interpolant,
-    LinearInterpolant,
-    CurvatureTransferInterpolant,
-)
 from .bridge import (
     Bridge,
     ConstantBridge,
@@ -18,4 +13,13 @@ from .curvature_sampler import (
     FPCABackend,
     SVDBackend,
     PSplineBackend,
+)
+from .imputer import (
+    ResidualImputer,
+    LerpResidualImputer,
+    DerivPropResidualImputer,
+)
+from .coupler import (
+    Coupler,
+    RBFCoupler,
 )
